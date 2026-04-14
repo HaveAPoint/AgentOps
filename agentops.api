@@ -1,0 +1,144 @@
+syntax = "v1"
+
+type (
+	LoginReq {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	LoginResp {
+		AccessToken string `json:"accessToken"`
+		ExpiresIn   int64  `json:"expiresIn"`
+	}
+	CreateTaskReq {
+		Title            string   `json:"title"`
+		RepoPath         string   `json:"repoPath"`
+		Prompt           string   `json:"prompt"`
+		Mode             string   `json:"mode,options=analyze|patch"`
+		ApprovalRequired bool     `json:"approvalRequired,optional"`
+		MaxSteps         int64    `json:"maxSteps,default=10"`
+		AllowedPaths     []string `json:"allowedPaths,optional"`
+		DeniedPaths      []string `json:"deniedPaths,optional"`
+	}
+	CreateTaskResp {
+		Id     string `json:"id"`
+		Status string `json:"status"`
+	}
+	GetTaskReq {
+		Id string `path:"id"`
+	}
+	GetTaskLogsReq {
+		Id string `path:"id"`
+	}
+	TaskItem {
+		Id               string `json:"id"`
+		Title            string `json:"title"`
+		RepoPath         string `json:"repoPath"`
+		Mode             string `json:"mode"`
+		Status           string `json:"status"`
+		ApprovalRequired bool   `json:"approvalRequired"`
+		CreatedBy        string `json:"createdBy"`
+		GitBranch        string `json:"gitBranch"`
+		GitHeadCommit    string `json:"gitHeadCommit"`
+		GitDirty         bool   `json:"gitDirty"`
+		CreatedAt        string `json:"createdAt"`
+		UpdatedAt        string `json:"updatedAt"`
+	}
+	TaskListResp {
+		Items []TaskItem `json:"items"`
+	}
+	TaskDetailResp {
+		Id               string   `json:"id"`
+		Title            string   `json:"title"`
+		RepoPath         string   `json:"repoPath"`
+		Prompt           string   `json:"prompt"`
+		Mode             string   `json:"mode"`
+		Status           string   `json:"status"`
+		ApprovalRequired bool     `json:"approvalRequired"`
+		MaxSteps         int64    `json:"maxSteps"`
+		AllowedPaths     []string `json:"allowedPaths"`
+		DeniedPaths      []string `json:"deniedPaths"`
+		CreatedBy        string   `json:"createdBy"`
+		GitBranch        string   `json:"gitBranch"`
+		GitHeadCommit    string   `json:"gitHeadCommit"`
+		GitDirty         bool     `json:"gitDirty"`
+		CreatedAt        string   `json:"createdAt"`
+		UpdatedAt        string   `json:"updatedAt"`
+	}
+	ApproveTaskReq {
+		Id      string `path:"id"`
+		Comment string `json:"comment,optional"`
+	}
+	ApproveTaskResp {
+		Id     string `json:"id"`
+		Status string `json:"status"`
+	}
+	CancelTaskReq {
+		Id     string `path:"id"`
+		Reason string `json:"reason,optional"`
+	}
+	CancelTaskResp {
+		Id     string `json:"id"`
+		Status string `json:"status"`
+	}
+	LogItem {
+		Step       int64  `json:"step"`
+		Level      string `json:"level"`
+		Message    string `json:"message"`
+		ToolName   string `json:"toolName"`
+		OccurredAt string `json:"occurredAt"`
+	}
+	TaskLogsResp {
+		Items []LogItem `json:"items"`
+	}
+	GetTaskExecutionsReq {
+		Id string `path:"id"`
+	}
+	ExecutionItem {
+		Id            string `json:"id"`
+		TaskId        string `json:"taskId"`
+		Status        string `json:"status"`
+		StartedAt     string `json:"startedAt"`
+		FinishedAt    string `json:"finishedAt"`
+		ResultSummary string `json:"resultSummary"`
+	}
+	TaskExecutionsResp {
+		Items []ExecutionItem `json:"items"`
+	}
+)
+
+@server (
+	group:  auth
+	prefix: /api/v1
+)
+service agentops-api {
+	@handler Login
+	post /auth/login (LoginReq) returns (LoginResp)
+}
+
+@server (
+	group:  tasks
+	prefix: /api/v1
+)
+service agentops-api {
+	@handler CreateTask
+	post /tasks (CreateTaskReq) returns (CreateTaskResp)
+
+	@handler ListTasks
+	get /tasks returns (TaskListResp)
+
+	@handler GetTask
+	get /tasks/:id (GetTaskReq) returns (TaskDetailResp)
+
+	@handler ApproveTask
+	post /tasks/:id/approve (ApproveTaskReq) returns (ApproveTaskResp)
+
+	@handler CancelTask
+	post /tasks/:id/cancel (CancelTaskReq) returns (CancelTaskResp)
+
+	@handler GetTaskLogs
+	get /tasks/:id/logs (GetTaskLogsReq) returns (TaskLogsResp)
+
+	@handler GetTaskExecutions
+	get /tasks/:id/executions (GetTaskExecutionsReq) returns (TaskExecutionsResp)
+}
+
