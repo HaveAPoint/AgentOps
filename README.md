@@ -2,12 +2,19 @@
 
 ## What Is This
 
-AgentOps 是一个基于 go-zero 的学习型后端项目。
-当前目标不是一次性做完整平台，而是通过“任务创建、查询、状态流转、日志与执行记录”这几类接口，逐步熟悉 go-zero 的接口契约、代码生成链路和后端项目骨架。
+AgentOps 是一个基于 go-zero 的学习型后端项目，当前方向是把“代码任务 / 分析任务”纳入一个可控、可审计、可审批的任务平台骨架。
+
+当前项目重点不是一次性做完整 AI 平台，而是围绕任务主链，逐步熟悉：
+
+- `.api -> goctl -> types / handler / logic`
+- go-zero 的分层职责
+- PostgreSQL 接入与主链落库
+- 状态流转、审计、执行记录
+- Git 上下文感知
 
 ## Current Scope
 
-当前第一版已经完成这些接口：
+当前已经具备这些接口：
 
 - `POST /api/v1/auth/login`
 - `POST /api/v1/tasks`
@@ -18,27 +25,64 @@ AgentOps 是一个基于 go-zero 的学习型后端项目。
 - `GET /api/v1/tasks/:id/logs`
 - `GET /api/v1/tasks/:id/executions`
 
-当前这些接口主要用于学习和验证 go-zero 请求链，任务数据仍然以假数据为主，还没有接数据库持久化。
+## What Is Real Now
 
-## Not Done Yet
+当前这些能力已经接入 PostgreSQL：
 
-当前第一版还没有完成：
+- `CreateTask`
+  - 插入 `tasks`
+  - 插入 `task_policies`
+  - 插入最小 `audit_logs`
+- `ListTasks`
+  - 真实查询 `tasks`
+- `GetTask`
+  - 真实查询 `tasks + task_policies`
+- `ApproveTask`
+  - 基于真实状态更新
+  - 写 `approval_records`
+  - 写 `audit_logs`
+- `CancelTask`
+  - 基于真实状态更新
+  - 写 `audit_logs`
+- `GetTaskLogs`
+  - 真实查询 `audit_logs`
+- `GetTaskExecutions`
+  - 真实查询 `task_executions`
+- Git 上下文
+  - 创建任务时采集 `branch / head commit / dirty`
+  - 存入 `tasks`
+  - 列表和详情接口可返回这些字段
 
-- 数据库存储
-- 真实状态持久化
-- 完整错误码体系
-- 权限控制
-- 审批规则 / 策略模块拆分
-- 审计模块拆分
-- 执行器模块拆分
+## Current Data Model
 
-目前的重点仍然是先把项目结构、职责边界和请求链路理解清楚。
+当前最核心的几张表：
+
+- `tasks`
+  任务本体
+- `task_policies`
+  任务策略快照
+- `task_executions`
+  执行记录
+- `approval_records`
+  审批记录
+- `audit_logs`
+  审计日志
+
+关系可以先这样理解：
+
+- `tasks` 是中心
+- `task_policies` 当前基本是 `1:1`
+- `audit_logs` 是 `1:N`
+- `task_executions` 是 `1:N`
+- `approval_records` 设计上允许 `1:N`
 
 ## Tech Stack
 
 - Go
 - go-zero
 - goctl
+- PostgreSQL
+- Git
 
 ## Project Structure
 
@@ -52,96 +96,63 @@ AgentOps 是一个基于 go-zero 的学习型后端项目。
   HTTP 请求入口，负责接收请求、解析参数、调用 logic、返回响应。
 
 - `internal/logic`
-  业务流程层，负责参数校验、状态判断、假数据返回和后续真实业务逻辑。
+  业务流程层，负责参数校验、状态判断、状态流转、组织响应。
+
+- `internal/model`
+  数据访问层，负责 SQL 和数据库读写。
 
 - `internal/svc`
-  ServiceContext 所在位置，负责管理共享依赖。当前项目依赖较少，后续数据库、客户端、配置等都会从这里接入。
+  `ServiceContext` 所在位置，负责共享依赖注入。
+
+- `internal/gitctx`
+  Git 上下文读取辅助包，负责识别仓库状态并采集 Git 信息。
+
+- `migrations`
+  建表 SQL / migration 文件。
 
 - `etc`
   配置文件目录。
 
+## Current Status Design
+
+当前任务状态：
+
+- `pending`
+- `waiting_approval`
+- `running`
+- `succeeded`
+- `failed`
+- `cancelled`
+
+当前任务模式：
+
+- `analyze`
+- `patch`
+
+含义：
+
+- `analyze`
+  分析型任务，偏只读理解
+- `patch`
+  修改型任务，偏代码改动
+
+## What Is Not Done Yet
+
+当前还没有完全做完的部分：
+
+- 统一错误码与更细的 HTTP 状态映射
+- 真实执行器接入
+- `task_executions` 的完整写入链
+- 更完整的审批人 / 操作者身份
+- 更细的策略模型拆分
+- CLI 主链接入
+- README / 运行说明继续细化
+
 ## How To Run
 
-在项目根目录执行：
+### 1. 启动 PostgreSQL
+
+如果你本地是用 Docker：
 
 ```bash
-go run . -f etc/agentops-api.yaml
-默认启动地址：
-
-bash
-
-http://localhost:8888
-API Examples
-查询任务列表：
-
-bash
-
-curl -i 'http://localhost:8888/api/v1/tasks'
-查询任务详情：
-
-bash
-
-curl -i 'http://localhost:8888/api/v1/tasks/task-001'
-审批任务：
-
-bash
-
-curl -i -X POST 'http://localhost:8888/api/v1/tasks/task-001/approve' \
-  -H 'Content-Type: application/json' \
-  -d '{}'
-取消任务：
-
-bash
-
-curl -i -X POST 'http://localhost:8888/api/v1/tasks/task-001/cancel' \
-  -H 'Content-Type: application/json' \
-  -d '{}'
-查询任务日志：
-
-bash
-
-curl -i 'http://localhost:8888/api/v1/tasks/task-001/logs'
-查询任务执行记录：
-
-bash
-
-curl -i 'http://localhost:8888/api/v1/tasks/task-001/executions'
-go-zero Skeleton Notes
-这个项目当前最重要的认知不是“接口数量”，而是 go-zero 的项目骨架：
-
-.api -> goctl -> types / handler / logic
-.api 是接口契约源头
-修改 .api 后，应该重新生成代码
-types.go 是生成物，不应该被当成主维护对象
-handler 负责请求入口，不负责写业务规则
-logic 负责业务流程，不负责处理 HTTP 细节
-ServiceContext 用来承载共享依赖
-NewXxxLogic(ctx, svcCtx) 是 go-zero 里常见的业务逻辑模板
-Current Learning Summary
-当前已经摸清的 3 类接口视角：
-
-查询类接口
-
-ListTasks
-GetTask
-动作类接口
-
-ApproveTask
-CancelTask
-治理 / 审计类接口
-
-GetTaskLogs
-GetTaskExecutions
-对应的核心理解：
-
-查询接口重点是取参和组织响应
-动作接口重点是表达状态变化
-日志和执行记录不是任务本体，而是任务过程的两个不同视角
-Next Step
-后续计划逐步增加：
-
-真实任务存储
-状态持久化
-更清晰的错误定义
-policy / audit / executor 模块拆分
-更像真实平台后端的任务生命周期管理
+docker start agentops-postgres

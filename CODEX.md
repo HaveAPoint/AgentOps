@@ -53,7 +53,7 @@ AgentOps Platform
 - 接口契约：`.api` + `goctl`
 - 数据库：PostgreSQL
 - 客户端：CLI
-- 执行器：先 mock，后接外部执行器 / Codex
+- 执行器：先 mock，后接外部执行器（Codex / Claude Code）
 - 版本管理上下文：Git（先只读感知，后续再逐步增强）
 
 ---
@@ -124,6 +124,59 @@ logic 不负责：
 - Git reader
 - Executor adapter
 - 可能的缓存或其他共享资源
+
+---
+
+## 外部执行器接入约定
+
+当平台开始接真实执行能力时，`Codex` 和 `Claude Code` 都应被视为：
+
+- 外部执行器
+- 统一 executor 接口下的不同 provider
+- 平台控制面之外的受控执行单元
+
+接入原则：
+
+1. 业务层不直接调用具体 CLI
+2. `logic` 只面向统一 `executor` 接口编排流程
+3. `executor` 适配层负责屏蔽 `codex` / `claudecode` 的命令差异
+4. 状态流转、审批校验、权限校验、审计写入仍然属于平台，不下沉到执行器
+5. 执行器只负责执行、日志回传、结果归一化，不负责业务判定
+
+建议 provider 形态：
+
+- `mock`：本地开发与联调
+- `codex`：调用 Codex CLI 或对应适配入口
+- `claudecode`：调用 Claude Code CLI 或对应适配入口
+
+建议调用链：
+
+1. 平台完成任务状态与策略校验
+2. 平台创建 execution 记录
+3. `logic` 调用统一 `executor adapter`
+4. adapter 选择 `mock / codex / claudecode`
+5. adapter 启动外部执行器并捕获 stdout / stderr / 退出状态
+6. 平台根据归一化结果更新 execution、task、audit、history
+
+边界要求：
+
+- 不允许在 task logic 中直接拼接 `codex` 或 `claudecode` 命令
+- 不允许把数据库写入责任塞进 executor provider
+- 不允许让 provider 自己决定审批是否通过或路径是否越权
+- repo / path / mode / actor 的约束必须先由平台决定，再交给执行器执行
+
+目录建议：
+
+- `internal/executor/interface.go`
+  定义统一执行接口与通用结果结构
+- `internal/executor/mock/`
+  mock provider
+- `internal/executor/codex/`
+  Codex provider
+- `internal/executor/claudecode/`
+  Claude Code provider
+
+如果后续要支持更多执行器，也必须继续挂在统一 adapter 之下，而不是把平台写成某一个具体工具的硬编码壳。
 
 ---
 
