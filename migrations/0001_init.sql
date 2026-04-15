@@ -5,8 +5,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     prompt TEXT NOT NULL,
     mode VARCHAR(32) NOT NULL CHECK (mode IN ('analyze', 'patch')),
     status VARCHAR(32) NOT NULL CHECK (status IN (
-        'pending',
         'waiting_approval',
+        'pending',
         'running',
         'succeeded',
         'failed',

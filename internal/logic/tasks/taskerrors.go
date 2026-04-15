@@ -13,6 +13,9 @@ var (
 	ErrInvalidMode            = errors.New("mode must be analyze or patch")
 	ErrInvalidMaxSteps        = errors.New("maxSteps must be greater than 0")
 	ErrTaskNotWaitingApproval = errors.New("task is not waiting for approval")
+	ErrTaskNotPending         = errors.New("task is not pending")
+	ErrOperatorIDRequired     = errors.New("operatorId is required")
 	ErrTaskCannotBeCancelled  = errors.New("task cannot be cancelled from current status")
 	ErrRepoHasNoCommits       = errors.New("git repository has no commits yet")
 )
+

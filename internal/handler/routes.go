@@ -62,6 +62,11 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 				Path:    "/tasks/:id/logs",
 				Handler: tasks.GetTaskLogsHandler(serverCtx),
 			},
+			{
+				Method:  http.MethodPost,
+				Path:    "/tasks/:id/start",
+				Handler: tasks.StartTaskHandler(serverCtx),
+			},
 		},
 		rest.WithPrefix("/api/v1"),
 	)

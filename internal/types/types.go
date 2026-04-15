@@ -4,8 +4,9 @@
 package types
 
 type ApproveTaskReq struct {
-	Id      string `path:"id"`
-	Comment string `json:"comment,optional"`
+	Id         string `path:"id"`
+	ReviewerId string `json:"reviewerId"`
+	Comment    string `json:"comment,optional"`
 }
 
 type ApproveTaskResp struct {
@@ -76,6 +77,16 @@ type LoginReq struct {
 type LoginResp struct {
 	AccessToken string `json:"accessToken"`
 	ExpiresIn   int64  `json:"expiresIn"`
+}
+
+type StartTaskReq struct {
+	Id         string `path:"id"`
+	OperatorId string `json:"operatorId"`
+}
+
+type StartTaskResp struct {
+	Id     string `json:"id"`
+	Status string `json:"status"`
 }
 
 type TaskDetailResp struct {

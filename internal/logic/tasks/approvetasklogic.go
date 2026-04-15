@@ -38,6 +38,11 @@ func (l *ApproveTaskLogic) ApproveTask(req *types.ApproveTaskReq) (resp *types.A
 		return nil, ErrTaskIDRequired
 	}
 
+	reviewerID := strings.TrimSpace(req.ReviewerId)
+	if reviewerID == "" {
+		return nil, errors.New("reviewerId is required")
+	}
+
 	taskID, err := strconv.ParseInt(idText, 10, 64)
 	if err != nil || taskID <= 0 {
 		return nil, ErrInvalidTaskID
@@ -63,13 +68,13 @@ func (l *ApproveTaskLogic) ApproveTask(req *types.ApproveTaskReq) (resp *types.A
 		return nil, ErrTaskNotWaitingApproval
 	}
 
-	if _, err = l.svcCtx.TaskModel.UpdateStatus(l.ctx, tx, taskID, TaskStatusRunning); err != nil {
+	if _, err = l.svcCtx.TaskModel.UpdateStatus(l.ctx, tx, taskID, TaskStatusPending); err != nil {
 		return nil, err
 	}
 
 	if _, err = l.svcCtx.ApprovalRecordModel.Insert(l.ctx, tx, &model.ApprovalRecord{
 		TaskID:     taskID,
-		ApprovedBy: "system",
+		ApprovedBy: reviewerID,
 		Comment:    strings.TrimSpace(req.Comment),
 	}); err != nil {
 		return nil, err
@@ -97,6 +102,6 @@ func (l *ApproveTaskLogic) ApproveTask(req *types.ApproveTaskReq) (resp *types.A
 
 	return &types.ApproveTaskResp{
 		Id:     strconv.FormatInt(taskID, 10),
-		Status: TaskStatusRunning,
+		Status: TaskStatusPending,
 	}, nil
 }
