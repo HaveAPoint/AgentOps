@@ -40,8 +40,10 @@ func (l *ApproveTaskLogic) ApproveTask(req *types.ApproveTaskReq) (resp *types.A
 
 	reviewerID := strings.TrimSpace(req.ReviewerId)
 	if reviewerID == "" {
-		return nil, errors.New("reviewerId is required")
+		return nil, ErrReviewerIDRequired
 	}
+
+	reason := strings.TrimSpace(req.Reason)
 
 	taskID, err := strconv.ParseInt(idText, 10, 64)
 	if err != nil || taskID <= 0 {
@@ -68,14 +70,36 @@ func (l *ApproveTaskLogic) ApproveTask(req *types.ApproveTaskReq) (resp *types.A
 		return nil, ErrTaskNotWaitingApproval
 	}
 
-	if _, err = l.svcCtx.TaskModel.UpdateStatus(l.ctx, tx, taskID, TaskStatusPending); err != nil {
+	if task.ReviewerId.Valid && task.ReviewerId.String != reviewerID {
+		return nil, ErrReviewerIDMismatch
+	}
+
+	approvedAt := time.Now().UTC()
+
+	if _, err = l.svcCtx.TaskModel.Approve(l.ctx, tx, taskID, reviewerID, approvedAt); err != nil {
+		return nil, err
+	}
+
+	if _, err = l.svcCtx.TaskStatusHistoryModel.Insert(l.ctx, tx, &model.TaskStatusHistory{
+		TaskID: taskID,
+		FromStatus: sql.NullString{
+			String: task.Status,
+			Valid:  task.Status != "",
+		},
+		ToStatus:  TaskStatusPending,
+		Action:    "approve",
+		ActorID:   reviewerID,
+		ActorRole: "reviewer",
+		Reason:    reason,
+	}); err != nil {
 		return nil, err
 	}
 
 	if _, err = l.svcCtx.ApprovalRecordModel.Insert(l.ctx, tx, &model.ApprovalRecord{
 		TaskID:     taskID,
-		ApprovedBy: reviewerID,
-		Comment:    strings.TrimSpace(req.Comment),
+		ReviewerId: reviewerID,
+		Decision:   "approved",
+		Reason:     reason,
 	}); err != nil {
 		return nil, err
 	}
@@ -85,13 +109,18 @@ func (l *ApproveTaskLogic) ApproveTask(req *types.ApproveTaskReq) (resp *types.A
 		return nil, err
 	}
 
+	message := "task approved by reviewer: " + reviewerID
+	if reason != "" {
+		message = message + ", reason: " + reason
+	}
+
 	if _, err = l.svcCtx.AuditLogModel.Insert(l.ctx, tx, &model.AuditLog{
 		TaskID:     taskID,
 		Step:       maxStep + 1,
 		Level:      "info",
-		Message:    "task approved",
+		Message:    message,
 		ToolName:   "api",
-		OccurredAt: time.Now().UTC(),
+		OccurredAt: approvedAt,
 	}); err != nil {
 		return nil, err
 	}

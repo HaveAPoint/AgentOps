@@ -43,7 +43,7 @@ func (l *ListTasksLogic) ListTasks() (resp *types.TaskListResp, err error) {
 			Mode:             task.Mode,
 			Status:           task.Status,
 			ApprovalRequired: task.ApprovalRequired,
-			CreatedBy:        task.CreatedBy,
+			CreatorId:        task.CreatorId,
 			GitBranch:        task.GitBranch,
 			GitHeadCommit:    task.GitHeadCommit,
 			GitDirty:         task.GitDirty,

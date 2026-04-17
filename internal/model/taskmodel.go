@@ -15,12 +15,20 @@ type Task struct {
 	Status           string
 	ApprovalRequired bool
 	MaxSteps         int64
-	CreatedBy        string
-	GitBranch        string
-	GitHeadCommit    string
-	GitDirty         bool
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+
+	CreatorId   string
+	ReviewerId  sql.NullString
+	OperatorId  sql.NullString
+	ApprovedBy  sql.NullString
+	ApprovedAt  sql.NullTime
+	CancelledBy sql.NullString
+	CancelledAt sql.NullTime
+
+	GitBranch     string
+	GitHeadCommit string
+	GitDirty      bool
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 type TaskModel struct {
@@ -41,11 +49,21 @@ func (m *TaskModel) Insert(ctx context.Context, exec DBTX, task *Task) (int64, e
 			status,
 			approval_required,
 			max_steps,
-			created_by,
+			creator_id,
+			reviewer_id,
+			operator_id,
+			approved_by,
+			approved_at,
+			cancelled_by,
+			cancelled_at,
 			git_branch,
 			git_head_commit,
 			git_dirty
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7,
+			$8, $9, $10, $11, $12, $13, $14,
+			$15, $16, $17
+		)
 		RETURNING id, created_at, updated_at
 	`
 
@@ -63,7 +81,13 @@ func (m *TaskModel) Insert(ctx context.Context, exec DBTX, task *Task) (int64, e
 		task.Status,
 		task.ApprovalRequired,
 		task.MaxSteps,
-		task.CreatedBy,
+		task.CreatorId,
+		nullStringValue(task.ReviewerId),
+		nullStringValue(task.OperatorId),
+		nullStringValue(task.ApprovedBy),
+		nullTimeValue(task.ApprovedAt),
+		nullStringValue(task.CancelledBy),
+		nullTimeValue(task.CancelledAt),
 		task.GitBranch,
 		task.GitHeadCommit,
 		task.GitDirty,
@@ -88,7 +112,13 @@ func (m *TaskModel) List(ctx context.Context) ([]Task, error) {
 			mode,
 			status,
 			approval_required,
-			created_by,
+			creator_id,
+			reviewer_id,
+			operator_id,
+			approved_by,
+			approved_at,
+			cancelled_by,
+			cancelled_at,
 			git_branch,
 			git_head_commit,
 			git_dirty,
@@ -114,7 +144,13 @@ func (m *TaskModel) List(ctx context.Context) ([]Task, error) {
 			&task.Mode,
 			&task.Status,
 			&task.ApprovalRequired,
-			&task.CreatedBy,
+			&task.CreatorId,
+			&task.ReviewerId,
+			&task.OperatorId,
+			&task.ApprovedBy,
+			&task.ApprovedAt,
+			&task.CancelledBy,
+			&task.CancelledAt,
 			&task.GitBranch,
 			&task.GitHeadCommit,
 			&task.GitDirty,
@@ -144,7 +180,13 @@ func (m *TaskModel) FindByID(ctx context.Context, id int64) (*Task, error) {
 			status,
 			approval_required,
 			max_steps,
-			created_by,
+			creator_id,
+			reviewer_id,
+			operator_id,
+			approved_by,
+			approved_at,
+			cancelled_by,
+			cancelled_at,
 			git_branch,
 			git_head_commit,
 			git_dirty,
@@ -164,7 +206,13 @@ func (m *TaskModel) FindByID(ctx context.Context, id int64) (*Task, error) {
 		&task.Status,
 		&task.ApprovalRequired,
 		&task.MaxSteps,
-		&task.CreatedBy,
+		&task.CreatorId,
+		&task.ReviewerId,
+		&task.OperatorId,
+		&task.ApprovedBy,
+		&task.ApprovedAt,
+		&task.CancelledBy,
+		&task.CancelledAt,
 		&task.GitBranch,
 		&task.GitHeadCommit,
 		&task.GitDirty,
@@ -189,7 +237,13 @@ func (m *TaskModel) FindByIDForUpdate(ctx context.Context, exec DBTX, id int64) 
 			status,
 			approval_required,
 			max_steps,
-			created_by,
+			creator_id,
+			reviewer_id,
+			operator_id,
+			approved_by,
+			approved_at,
+			cancelled_by,
+			cancelled_at,
 			git_branch,
 			git_head_commit,
 			git_dirty,
@@ -210,7 +264,13 @@ func (m *TaskModel) FindByIDForUpdate(ctx context.Context, exec DBTX, id int64) 
 		&task.Status,
 		&task.ApprovalRequired,
 		&task.MaxSteps,
-		&task.CreatedBy,
+		&task.CreatorId,
+		&task.ReviewerId,
+		&task.OperatorId,
+		&task.ApprovedBy,
+		&task.ApprovedAt,
+		&task.CancelledBy,
+		&task.CancelledAt,
 		&task.GitBranch,
 		&task.GitHeadCommit,
 		&task.GitDirty,
@@ -239,4 +299,150 @@ func (m *TaskModel) UpdateStatus(ctx context.Context, exec DBTX, id int64, statu
 	}
 
 	return updatedAt, nil
+}
+
+func (m *TaskModel) Approve(ctx context.Context, exec DBTX, id int64, reviewerID string, approvedAt time.Time) (time.Time, error) {
+	query := `
+		UPDATE tasks
+		SET
+			status = $2,
+			reviewer_id = $3,
+			approved_by = $4,
+			approved_at = $5,
+			updated_at = NOW()
+		WHERE id = $1
+		RETURNING updated_at
+	`
+
+	var updatedAt time.Time
+	err := exec.QueryRowContext(
+		ctx,
+		query,
+		id,
+		"pending",
+		reviewerID,
+		reviewerID,
+		approvedAt,
+	).Scan(&updatedAt)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	return updatedAt, nil
+}
+
+func (m *TaskModel) Cancel(ctx context.Context, exec DBTX, id int64, cancelledBy string, cancelledAt time.Time) (time.Time, error) {
+	query := `
+		UPDATE tasks
+		SET
+			status = $2,
+			cancelled_by = $3,
+			cancelled_at = $4,
+			updated_at = NOW()
+		WHERE id = $1
+		RETURNING updated_at
+	`
+
+	var updatedAt time.Time
+	err := exec.QueryRowContext(
+		ctx,
+		query,
+		id,
+		"cancelled",
+		cancelledBy,
+		cancelledAt,
+	).Scan(&updatedAt)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	return updatedAt, nil
+}
+
+func (m *TaskModel) Start(ctx context.Context, exec DBTX, id int64, operatorID string) (time.Time, error) {
+	query := `
+		UPDATE tasks
+		SET
+			status = $2,
+			operator_id = $3,
+			updated_at = NOW()
+		WHERE id = $1
+		RETURNING updated_at
+	`
+
+	var updatedAt time.Time
+	err := exec.QueryRowContext(
+		ctx,
+		query,
+		id,
+		"running",
+		operatorID,
+	).Scan(&updatedAt)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	return updatedAt, nil
+}
+
+func (m *TaskModel) Succeed(ctx context.Context, exec DBTX, id int64) (time.Time, error) {
+	query := `
+		UPDATE tasks
+		SET
+			status = $2,
+			updated_at = NOW()
+		WHERE id = $1
+		RETURNING updated_at
+	`
+
+	var updatedAt time.Time
+	err := exec.QueryRowContext(
+		ctx,
+		query,
+		id,
+		"succeeded",
+	).Scan(&updatedAt)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	return updatedAt, nil
+}
+
+func (m *TaskModel) Fail(ctx context.Context, exec DBTX, id int64) (time.Time, error) {
+	query := `
+		UPDATE tasks
+		SET
+			status = $2,
+			updated_at = NOW()
+		WHERE id = $1
+		RETURNING updated_at
+	`
+
+	var updatedAt time.Time
+	err := exec.QueryRowContext(
+		ctx,
+		query,
+		id,
+		"failed",
+	).Scan(&updatedAt)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	return updatedAt, nil
+}
+
+func nullStringValue(v sql.NullString) any {
+	if v.Valid {
+		return v.String
+	}
+	return nil
+}
+
+func nullTimeValue(v sql.NullTime) any {
+	if v.Valid {
+		return v.Time
+	}
+	return nil
 }

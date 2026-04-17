@@ -18,21 +18,21 @@ import (
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
-type StartTaskLogic struct {
+type FailTaskLogic struct {
 	logx.Logger
 	ctx    context.Context
 	svcCtx *svc.ServiceContext
 }
 
-func NewStartTaskLogic(ctx context.Context, svcCtx *svc.ServiceContext) *StartTaskLogic {
-	return &StartTaskLogic{
+func NewFailTaskLogic(ctx context.Context, svcCtx *svc.ServiceContext) *FailTaskLogic {
+	return &FailTaskLogic{
 		Logger: logx.WithContext(ctx),
 		ctx:    ctx,
 		svcCtx: svcCtx,
 	}
 }
 
-func (l *StartTaskLogic) StartTask(req *types.StartTaskReq) (resp *types.StartTaskResp, err error) {
+func (l *FailTaskLogic) FailTask(req *types.FailTaskReq) (resp *types.FailTaskResp, err error) {
 	idText := strings.TrimSpace(req.Id)
 	if idText == "" {
 		return nil, ErrTaskIDRequired
@@ -42,6 +42,13 @@ func (l *StartTaskLogic) StartTask(req *types.StartTaskReq) (resp *types.StartTa
 	if operatorID == "" {
 		return nil, ErrOperatorIDRequired
 	}
+
+	errorMessage := strings.TrimSpace(req.ErrorMessage)
+	if errorMessage == "" {
+		return nil, ErrErrorMessageRequired
+	}
+
+	resultSummary := strings.TrimSpace(req.ResultSummary)
 
 	taskID, err := strconv.ParseInt(idText, 10, 64)
 	if err != nil || taskID <= 0 {
@@ -64,17 +71,29 @@ func (l *StartTaskLogic) StartTask(req *types.StartTaskReq) (resp *types.StartTa
 		return nil, err
 	}
 
-	if task.Status != TaskStatusPending {
-		return nil, ErrTaskNotPending
+	if task.Status != TaskStatusRunning {
+		return nil, ErrTaskNotRunning
 	}
 
-	now := time.Now().UTC()
+	execution, err := l.svcCtx.TaskExecutionModel.FindLatestRunningByTaskIDForUpdate(l.ctx, tx, taskID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrRunningExecutionNotFound
+		}
+		return nil, err
+	}
 
 	if task.OperatorId.Valid && task.OperatorId.String != operatorID {
 		return nil, ErrOperatorIDMismatch
 	}
 
-	if _, err = l.svcCtx.TaskModel.Start(l.ctx, tx, taskID, operatorID); err != nil {
+	if execution.OperatorId != operatorID {
+		return nil, ErrExecutionOperatorMismatch
+	}
+
+	finishedAt := time.Now().UTC()
+
+	if _, err = l.svcCtx.TaskModel.Fail(l.ctx, tx, taskID); err != nil {
 		return nil, err
 	}
 
@@ -84,26 +103,26 @@ func (l *StartTaskLogic) StartTask(req *types.StartTaskReq) (resp *types.StartTa
 			String: task.Status,
 			Valid:  task.Status != "",
 		},
-		ToStatus:  TaskStatusRunning,
-		Action:    "start",
+		ToStatus:  TaskStatusFailed,
+		Action:    "fail",
 		ActorID:   operatorID,
 		ActorRole: "operator",
-		Reason:    "",
+		Reason:    errorMessage,
 	}); err != nil {
 		return nil, err
 	}
 
-	if _, err = l.svcCtx.TaskExecutionModel.Insert(l.ctx, tx, &model.TaskExecution{
-		TaskID:     taskID,
-		OperatorId: operatorID,
-		Status:     TaskStatusRunning,
-		StartedAt: sql.NullTime{
-			Time:  now,
-			Valid: true,
+	if err = l.svcCtx.TaskExecutionModel.Finish(
+		l.ctx,
+		tx,
+		execution.ID,
+		model.FinishExecutionParams{
+			Status:        TaskStatusFailed,
+			FinishedAt:    finishedAt,
+			ResultSummary: resultSummary,
+			ErrorMessage:  errorMessage,
 		},
-		ResultSummary: "",
-		ErrorMessage:  "",
-	}); err != nil {
+	); err != nil {
 		return nil, err
 	}
 
@@ -112,13 +131,18 @@ func (l *StartTaskLogic) StartTask(req *types.StartTaskReq) (resp *types.StartTa
 		return nil, err
 	}
 
+	message := "task failed by operator: " + operatorID + ", error: " + errorMessage
+	if resultSummary != "" {
+		message = message + ", result: " + resultSummary
+	}
+
 	if _, err = l.svcCtx.AuditLogModel.Insert(l.ctx, tx, &model.AuditLog{
 		TaskID:     taskID,
 		Step:       maxStep + 1,
-		Level:      "info",
-		Message:    "task started by operator: " + operatorID,
+		Level:      "error",
+		Message:    message,
 		ToolName:   "api",
-		OccurredAt: now,
+		OccurredAt: finishedAt,
 	}); err != nil {
 		return nil, err
 	}
@@ -127,8 +151,8 @@ func (l *StartTaskLogic) StartTask(req *types.StartTaskReq) (resp *types.StartTa
 		return nil, err
 	}
 
-	return &types.StartTaskResp{
+	return &types.FailTaskResp{
 		Id:     strconv.FormatInt(taskID, 10),
-		Status: TaskStatusRunning,
+		Status: TaskStatusFailed,
 	}, nil
 }

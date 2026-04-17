@@ -58,6 +58,11 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 				Handler: tasks.GetTaskExecutionsHandler(serverCtx),
 			},
 			{
+				Method:  http.MethodPost,
+				Path:    "/tasks/:id/fail",
+				Handler: tasks.FailTaskHandler(serverCtx),
+			},
+			{
 				Method:  http.MethodGet,
 				Path:    "/tasks/:id/logs",
 				Handler: tasks.GetTaskLogsHandler(serverCtx),
@@ -66,6 +71,16 @@ func RegisterHandlers(server *rest.Server, serverCtx *svc.ServiceContext) {
 				Method:  http.MethodPost,
 				Path:    "/tasks/:id/start",
 				Handler: tasks.StartTaskHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodGet,
+				Path:    "/tasks/:id/status-histories",
+				Handler: tasks.GetTaskStatusHistoriesHandler(serverCtx),
+			},
+			{
+				Method:  http.MethodPost,
+				Path:    "/tasks/:id/succeed",
+				Handler: tasks.SucceedTaskHandler(serverCtx),
 			},
 		},
 		rest.WithPrefix("/api/v1"),

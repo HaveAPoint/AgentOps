@@ -18,39 +18,32 @@ import (
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
-type CancelTaskLogic struct {
+type SucceedTaskLogic struct {
 	logx.Logger
 	ctx    context.Context
 	svcCtx *svc.ServiceContext
 }
 
-func NewCancelTaskLogic(ctx context.Context, svcCtx *svc.ServiceContext) *CancelTaskLogic {
-	return &CancelTaskLogic{
+func NewSucceedTaskLogic(ctx context.Context, svcCtx *svc.ServiceContext) *SucceedTaskLogic {
+	return &SucceedTaskLogic{
 		Logger: logx.WithContext(ctx),
 		ctx:    ctx,
 		svcCtx: svcCtx,
 	}
 }
 
-func (l *CancelTaskLogic) CancelTask(req *types.CancelTaskReq) (resp *types.CancelTaskResp, err error) {
+func (l *SucceedTaskLogic) SucceedTask(req *types.SucceedTaskReq) (resp *types.SucceedTaskResp, err error) {
 	idText := strings.TrimSpace(req.Id)
 	if idText == "" {
 		return nil, ErrTaskIDRequired
 	}
 
-	actorID := strings.TrimSpace(req.ActorId)
-	if actorID == "" {
-		return nil, ErrCancelActorIDRequired
+	operatorID := strings.TrimSpace(req.OperatorId)
+	if operatorID == "" {
+		return nil, ErrOperatorIDRequired
 	}
 
-	actorRole := strings.TrimSpace(req.ActorRole)
-	switch actorRole {
-	case "creator", "reviewer", "admin":
-	default:
-		return nil, ErrInvalidCancelActorRole
-	}
-
-	reason := strings.TrimSpace(req.Reason)
+	resultSummary := strings.TrimSpace(req.ResultSummary)
 
 	taskID, err := strconv.ParseInt(idText, 10, 64)
 	if err != nil || taskID <= 0 {
@@ -73,27 +66,29 @@ func (l *CancelTaskLogic) CancelTask(req *types.CancelTaskReq) (resp *types.Canc
 		return nil, err
 	}
 
-	switch task.Status {
-	case TaskStatusPending, TaskStatusWaitingApproval:
-	default:
-		return nil, ErrTaskCannotBeCancelled
+	if task.Status != TaskStatusRunning {
+		return nil, ErrTaskNotRunning
 	}
 
-	switch actorRole {
-	case "creator":
-		if task.CreatorId != actorID {
-			return nil, ErrCancelActorNotAllowed
+	execution, err := l.svcCtx.TaskExecutionModel.FindLatestRunningByTaskIDForUpdate(l.ctx, tx, taskID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrRunningExecutionNotFound
 		}
-	case "reviewer":
-		if !task.ReviewerId.Valid || task.ReviewerId.String != actorID {
-			return nil, ErrCancelActorNotAllowed
-		}
-	case "admin":
+		return nil, err
 	}
 
-	cancelledAt := time.Now().UTC()
+	if task.OperatorId.Valid && task.OperatorId.String != operatorID {
+		return nil, ErrOperatorIDMismatch
+	}
 
-	if _, err = l.svcCtx.TaskModel.Cancel(l.ctx, tx, taskID, actorID, cancelledAt); err != nil {
+	if execution.OperatorId != operatorID {
+		return nil, ErrExecutionOperatorMismatch
+	}
+
+	finishedAt := time.Now().UTC()
+
+	if _, err = l.svcCtx.TaskModel.Succeed(l.ctx, tx, taskID); err != nil {
 		return nil, err
 	}
 
@@ -103,12 +98,26 @@ func (l *CancelTaskLogic) CancelTask(req *types.CancelTaskReq) (resp *types.Canc
 			String: task.Status,
 			Valid:  task.Status != "",
 		},
-		ToStatus:  TaskStatusCancelled,
-		Action:    "cancel",
-		ActorID:   actorID,
-		ActorRole: actorRole,
-		Reason:    reason,
+		ToStatus:  TaskStatusSucceeded,
+		Action:    "succeed",
+		ActorID:   operatorID,
+		ActorRole: "operator",
+		Reason:    resultSummary,
 	}); err != nil {
+		return nil, err
+	}
+
+	if err = l.svcCtx.TaskExecutionModel.Finish(
+		l.ctx,
+		tx,
+		execution.ID,
+		model.FinishExecutionParams{
+			Status:        "succeeded",
+			FinishedAt:    finishedAt,
+			ResultSummary: resultSummary,
+			ErrorMessage:  "",
+		},
+	); err != nil {
 		return nil, err
 	}
 
@@ -117,9 +126,9 @@ func (l *CancelTaskLogic) CancelTask(req *types.CancelTaskReq) (resp *types.Canc
 		return nil, err
 	}
 
-	message := "task cancelled by " + actorRole + ": " + actorID
-	if reason != "" {
-		message = message + ", reason: " + reason
+	message := "task succeeded by operator: " + operatorID
+	if resultSummary != "" {
+		message = message + ", result: " + resultSummary
 	}
 
 	if _, err = l.svcCtx.AuditLogModel.Insert(l.ctx, tx, &model.AuditLog{
@@ -128,7 +137,7 @@ func (l *CancelTaskLogic) CancelTask(req *types.CancelTaskReq) (resp *types.Canc
 		Level:      "info",
 		Message:    message,
 		ToolName:   "api",
-		OccurredAt: cancelledAt,
+		OccurredAt: finishedAt,
 	}); err != nil {
 		return nil, err
 	}
@@ -137,8 +146,8 @@ func (l *CancelTaskLogic) CancelTask(req *types.CancelTaskReq) (resp *types.Canc
 		return nil, err
 	}
 
-	return &types.CancelTaskResp{
+	return &types.SucceedTaskResp{
 		Id:     strconv.FormatInt(taskID, 10),
-		Status: TaskStatusCancelled,
+		Status: TaskStatusSucceeded,
 	}, nil
 }

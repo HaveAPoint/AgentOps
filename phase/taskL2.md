@@ -443,3 +443,20 @@ L2 需要明确未来会变更的公开接口与类型：
 - 实施顺序已经写死，不需要实现者再自行决定阶段顺序
 - 接口、数据库、事务、测试、文档同步都被覆盖
 - 默认边界已经写死：无 JWT、无用户表、无 RBAC、无 `running -> cancelled`
+
+L2 当前落地结果（本仓库实现）
+
+- 主链已经固定为 `create -> approve -> start -> succeed/fail`
+- `approve` 已经改为 `waiting_approval -> pending`
+- `cancel` 已经固定为 `waiting_approval / pending -> cancelled`
+- `running -> cancelled` 在实现中明确不允许
+- `task_executions` 已经能记录 `operator_id / started_at / finished_at / result_summary / error_message`
+- `task_status_histories` 已经落库，并可查询 `action / actor_id / actor_role / reason`
+- `approve / start / succeed / fail / cancel` 都已经放进事务
+- `creator / reviewer / operator / admin` 目前通过请求体占位传入，不依赖 JWT
+- 已补最小行为级集成测试，包含 create 失败、主链成功、非法状态、重复动作、并发 approve、并发 start
+
+当前用于验收 L2 的直接命令：
+
+- `go test ./internal/logic/tasks -run TestL2 -count=1`
+- `go test ./...`

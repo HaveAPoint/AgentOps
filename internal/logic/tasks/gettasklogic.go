@@ -62,6 +62,36 @@ func (l *GetTaskLogic) GetTask(req *types.GetTaskReq) (resp *types.TaskDetailRes
 		deniedPaths = policy.DeniedPaths
 	}
 
+	reviewerID := ""
+	if task.ReviewerId.Valid {
+		reviewerID = task.ReviewerId.String
+	}
+
+	operatorID := ""
+	if task.OperatorId.Valid {
+		operatorID = task.OperatorId.String
+	}
+
+	approvedBy := ""
+	if task.ApprovedBy.Valid {
+		approvedBy = task.ApprovedBy.String
+	}
+
+	approvedAt := ""
+	if task.ApprovedAt.Valid {
+		approvedAt = task.ApprovedAt.Time.UTC().Format(time.RFC3339)
+	}
+
+	cancelledBy := ""
+	if task.CancelledBy.Valid {
+		cancelledBy = task.CancelledBy.String
+	}
+
+	cancelledAt := ""
+	if task.CancelledAt.Valid {
+		cancelledAt = task.CancelledAt.Time.UTC().Format(time.RFC3339)
+	}
+
 	return &types.TaskDetailResp{
 		Id:               strconv.FormatInt(task.ID, 10),
 		Title:            task.Title,
@@ -73,11 +103,18 @@ func (l *GetTaskLogic) GetTask(req *types.GetTaskReq) (resp *types.TaskDetailRes
 		MaxSteps:         task.MaxSteps,
 		AllowedPaths:     allowedPaths,
 		DeniedPaths:      deniedPaths,
-		CreatedBy:        task.CreatedBy,
+		CreatorId:        task.CreatorId,
+		ReviewerId:       reviewerID,
+		OperatorId:       operatorID,
+		ApprovedBy:       approvedBy,
+		ApprovedAt:       approvedAt,
+		CancelledBy:      cancelledBy,
+		CancelledAt:      cancelledAt,
 		GitBranch:        task.GitBranch,
 		GitHeadCommit:    task.GitHeadCommit,
 		GitDirty:         task.GitDirty,
 		CreatedAt:        task.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:        task.UpdatedAt.UTC().Format(time.RFC3339),
 	}, nil
+
 }

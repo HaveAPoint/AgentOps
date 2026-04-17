@@ -9,8 +9,9 @@ import (
 type ApprovalRecord struct {
 	ID         int64
 	TaskID     int64
-	ApprovedBy string
-	Comment    string
+	ReviewerId string
+	Decision   string
+	Reason     string
 	CreatedAt  time.Time
 }
 
@@ -26,9 +27,10 @@ func (m *ApprovalRecordModel) Insert(ctx context.Context, exec DBTX, record *App
 	query := `
 		INSERT INTO approval_records (
 			task_id,
-			approved_by,
-			comment
-		) VALUES ($1, $2, $3)
+			reviewer_id,
+			decision,
+			reason
+		) VALUES ($1, $2, $3, $4)
 		RETURNING id, created_at
 	`
 
@@ -39,8 +41,9 @@ func (m *ApprovalRecordModel) Insert(ctx context.Context, exec DBTX, record *App
 		ctx,
 		query,
 		record.TaskID,
-		record.ApprovedBy,
-		record.Comment,
+		record.ReviewerId,
+		record.Decision,
+		record.Reason,
 	).Scan(&id, &createdAt)
 	if err != nil {
 		return 0, err

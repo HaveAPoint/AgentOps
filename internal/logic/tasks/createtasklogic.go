@@ -46,6 +46,14 @@ func (l *CreateTaskLogic) CreateTask(req *types.CreateTaskReq) (resp *types.Crea
 		return nil, ErrPromptRequired
 	}
 
+	creatorID := strings.TrimSpace(req.CreatorId)
+	if creatorID == "" {
+		return nil, ErrCreatorIDRequired
+	}
+
+	reviewerID := strings.TrimSpace(req.ReviewerId)
+	operatorID := strings.TrimSpace(req.OperatorId)
+
 	if req.Mode != TaskModeAnalyze && req.Mode != TaskModePatch {
 		return nil, ErrInvalidMode
 	}
@@ -86,11 +94,20 @@ func (l *CreateTaskLogic) CreateTask(req *types.CreateTaskReq) (resp *types.Crea
 		Status:           status,
 		ApprovalRequired: req.ApprovalRequired,
 		MaxSteps:         req.MaxSteps,
-		CreatedBy:        "system",
-		GitBranch:        repoInfo.Branch,
-		GitHeadCommit:    repoInfo.HeadCommit,
-		GitDirty:         repoInfo.Dirty,
+		CreatorId:        creatorID,
+		ReviewerId: sql.NullString{
+			String: reviewerID,
+			Valid:  reviewerID != "",
+		},
+		OperatorId: sql.NullString{
+			String: operatorID,
+			Valid:  operatorID != "",
+		},
+		GitBranch:     repoInfo.Branch,
+		GitHeadCommit: repoInfo.HeadCommit,
+		GitDirty:      repoInfo.Dirty,
 	})
+
 	if err != nil {
 		return nil, err
 	}
@@ -104,11 +121,23 @@ func (l *CreateTaskLogic) CreateTask(req *types.CreateTaskReq) (resp *types.Crea
 		return nil, err
 	}
 
+	if _, err = l.svcCtx.TaskStatusHistoryModel.Insert(l.ctx, tx, &model.TaskStatusHistory{
+		TaskID:     taskID,
+		FromStatus: sql.NullString{},
+		ToStatus:   status,
+		Action:     "create",
+		ActorID:    creatorID,
+		ActorRole:  "creator",
+		Reason:     "",
+	}); err != nil {
+		return nil, err
+	}
+
 	_, err = l.svcCtx.AuditLogModel.Insert(l.ctx, tx, &model.AuditLog{
 		TaskID:     taskID,
 		Step:       1,
 		Level:      "info",
-		Message:    "task created",
+		Message:    "task created by creator: " + creatorID,
 		ToolName:   "api",
 		OccurredAt: time.Now().UTC(),
 	})

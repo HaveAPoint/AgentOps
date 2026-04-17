@@ -1,0 +1,3 @@
+-- Deprecated.
+-- L2 baseline has been folded into 0001_init.sql.
+-- This file is intentionally left empty.

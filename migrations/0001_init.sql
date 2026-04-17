@@ -14,7 +14,14 @@ CREATE TABLE IF NOT EXISTS tasks (
     )),
     approval_required BOOLEAN NOT NULL DEFAULT FALSE,
     max_steps BIGINT NOT NULL CHECK (max_steps > 0),
-    created_by VARCHAR(64) NOT NULL DEFAULT 'system',
+
+    creator_id VARCHAR(64) NOT NULL,
+    reviewer_id VARCHAR(64),
+    operator_id VARCHAR(64),
+    approved_by VARCHAR(64),
+    approved_at TIMESTAMPTZ,
+    cancelled_by VARCHAR(64),
+    cancelled_at TIMESTAMPTZ,
 
     git_branch VARCHAR(255) NOT NULL DEFAULT '',
     git_head_commit VARCHAR(64) NOT NULL DEFAULT '',
@@ -36,24 +43,43 @@ CREATE TABLE IF NOT EXISTS task_policies (
 CREATE TABLE IF NOT EXISTS task_executions (
     id BIGSERIAL PRIMARY KEY,
     task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    operator_id VARCHAR(64) NOT NULL,
     status VARCHAR(32) NOT NULL CHECK (status IN (
-        'pending',
         'running',
         'succeeded',
-        'failed',
-        'cancelled'
+        'failed'
     )),
-    started_at TIMESTAMPTZ,
+    started_at TIMESTAMPTZ NOT NULL,
     finished_at TIMESTAMPTZ,
     result_summary TEXT NOT NULL DEFAULT '',
+    error_message TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS approval_records (
     id BIGSERIAL PRIMARY KEY,
     task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-    approved_by VARCHAR(64) NOT NULL,
-    comment TEXT NOT NULL DEFAULT '',
+    reviewer_id VARCHAR(64) NOT NULL,
+    decision VARCHAR(32) NOT NULL CHECK (decision IN ('approved')),
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS task_status_histories (
+    id BIGSERIAL PRIMARY KEY,
+    task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    from_status VARCHAR(32),
+    to_status VARCHAR(32) NOT NULL,
+    action VARCHAR(32) NOT NULL,
+    actor_id VARCHAR(64) NOT NULL,
+    actor_role VARCHAR(32) NOT NULL CHECK (actor_role IN (
+        'creator',
+        'reviewer',
+        'operator',
+        'admin',
+        'system'
+    )),
+    reason TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -76,6 +102,9 @@ CREATE INDEX IF NOT EXISTS idx_task_executions_task_id
 
 CREATE INDEX IF NOT EXISTS idx_approval_records_task_id
     ON approval_records(task_id);
+
+CREATE INDEX IF NOT EXISTS idx_task_status_histories_task_id_created_at
+    ON task_status_histories(task_id, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_audit_logs_task_id_occurred_at
     ON audit_logs(task_id, occurred_at DESC);

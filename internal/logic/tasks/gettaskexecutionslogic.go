@@ -69,10 +69,12 @@ func (l *GetTaskExecutionsLogic) GetTaskExecutions(req *types.GetTaskExecutionsR
 		items = append(items, types.ExecutionItem{
 			Id:            strconv.FormatInt(execution.ID, 10),
 			TaskId:        strconv.FormatInt(execution.TaskID, 10),
+			OperatorId:    execution.OperatorId,
 			Status:        execution.Status,
 			StartedAt:     startedAt,
 			FinishedAt:    finishedAt,
 			ResultSummary: execution.ResultSummary,
+			ErrorMessage:  execution.ErrorMessage,
 		})
 	}
 

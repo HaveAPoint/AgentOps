@@ -9,13 +9,14 @@ import (
 )
 
 type ServiceContext struct {
-	Config              config.Config
-	DB                  *sql.DB
-	TaskModel           *model.TaskModel
-	TaskPolicyModel     *model.TaskPolicyModel
-	AuditLogModel       *model.AuditLogModel
-	ApprovalRecordModel *model.ApprovalRecordModel
-	TaskExecutionModel  *model.TaskExecutionModel
+	Config                 config.Config
+	DB                     *sql.DB
+	TaskModel              *model.TaskModel
+	TaskPolicyModel        *model.TaskPolicyModel
+	AuditLogModel          *model.AuditLogModel
+	ApprovalRecordModel    *model.ApprovalRecordModel
+	TaskExecutionModel     *model.TaskExecutionModel
+	TaskStatusHistoryModel *model.TaskStatusHistoryModel
 }
 
 func NewServiceContext(c config.Config) *ServiceContext {
@@ -25,12 +26,13 @@ func NewServiceContext(c config.Config) *ServiceContext {
 	}
 
 	return &ServiceContext{
-		Config:              c,
-		DB:                  db,
-		TaskModel:           model.NewTaskModel(db),
-		TaskPolicyModel:     model.NewTaskPolicyModel(db),
-		AuditLogModel:       model.NewAuditLogModel(db),
-		ApprovalRecordModel: model.NewApprovalRecordModel(db),
-		TaskExecutionModel:  model.NewTaskExecutionModel(db),
+		Config:                 c,
+		DB:                     db,
+		TaskModel:              model.NewTaskModel(db),
+		TaskPolicyModel:        model.NewTaskPolicyModel(db),
+		AuditLogModel:          model.NewAuditLogModel(db),
+		ApprovalRecordModel:    model.NewApprovalRecordModel(db),
+		TaskExecutionModel:     model.NewTaskExecutionModel(db),
+		TaskStatusHistoryModel: model.NewTaskStatusHistoryModel(db),
 	}
 }

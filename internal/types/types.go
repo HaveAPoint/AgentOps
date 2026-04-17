@@ -6,7 +6,7 @@ package types
 type ApproveTaskReq struct {
 	Id         string `path:"id"`
 	ReviewerId string `json:"reviewerId"`
-	Comment    string `json:"comment,optional"`
+	Reason     string `json:"reason,optional"`
 }
 
 type ApproveTaskResp struct {
@@ -15,8 +15,10 @@ type ApproveTaskResp struct {
 }
 
 type CancelTaskReq struct {
-	Id     string `path:"id"`
-	Reason string `json:"reason,optional"`
+	Id        string `path:"id"`
+	ActorId   string `json:"actorId"`
+	ActorRole string `json:"actorRole,options=creator|reviewer|admin"`
+	Reason    string `json:"reason,optional"`
 }
 
 type CancelTaskResp struct {
@@ -28,6 +30,9 @@ type CreateTaskReq struct {
 	Title            string   `json:"title"`
 	RepoPath         string   `json:"repoPath"`
 	Prompt           string   `json:"prompt"`
+	CreatorId        string   `json:"creatorId"`
+	ReviewerId       string   `json:"reviewerId,optional"`
+	OperatorId       string   `json:"operatorId,optional"`
 	Mode             string   `json:"mode,options=analyze|patch"`
 	ApprovalRequired bool     `json:"approvalRequired,optional"`
 	MaxSteps         int64    `json:"maxSteps,default=10"`
@@ -43,10 +48,24 @@ type CreateTaskResp struct {
 type ExecutionItem struct {
 	Id            string `json:"id"`
 	TaskId        string `json:"taskId"`
+	OperatorId    string `json:"operatorId"`
 	Status        string `json:"status"`
 	StartedAt     string `json:"startedAt"`
 	FinishedAt    string `json:"finishedAt"`
 	ResultSummary string `json:"resultSummary"`
+	ErrorMessage  string `json:"errorMessage"`
+}
+
+type FailTaskReq struct {
+	Id            string `path:"id"`
+	OperatorId    string `json:"operatorId"`
+	ResultSummary string `json:"resultSummary,optional"`
+	ErrorMessage  string `json:"errorMessage"`
+}
+
+type FailTaskResp struct {
+	Id     string `json:"id"`
+	Status string `json:"status"`
 }
 
 type GetTaskExecutionsReq struct {
@@ -58,6 +77,10 @@ type GetTaskLogsReq struct {
 }
 
 type GetTaskReq struct {
+	Id string `path:"id"`
+}
+
+type GetTaskStatusHistoriesReq struct {
 	Id string `path:"id"`
 }
 
@@ -89,6 +112,28 @@ type StartTaskResp struct {
 	Status string `json:"status"`
 }
 
+type StatusHistoryItem struct {
+	Id         string `json:"id"`
+	FromStatus string `json:"fromStatus"`
+	ToStatus   string `json:"toStatus"`
+	Action     string `json:"action"`
+	ActorId    string `json:"actorId"`
+	ActorRole  string `json:"actorRole"`
+	Reason     string `json:"reason"`
+	CreatedAt  string `json:"createdAt"`
+}
+
+type SucceedTaskReq struct {
+	Id            string `path:"id"`
+	OperatorId    string `json:"operatorId"`
+	ResultSummary string `json:"resultSummary,optional"`
+}
+
+type SucceedTaskResp struct {
+	Id     string `json:"id"`
+	Status string `json:"status"`
+}
+
 type TaskDetailResp struct {
 	Id               string   `json:"id"`
 	Title            string   `json:"title"`
@@ -100,7 +145,13 @@ type TaskDetailResp struct {
 	MaxSteps         int64    `json:"maxSteps"`
 	AllowedPaths     []string `json:"allowedPaths"`
 	DeniedPaths      []string `json:"deniedPaths"`
-	CreatedBy        string   `json:"createdBy"`
+	CreatorId        string   `json:"creatorId"`
+	ReviewerId       string   `json:"reviewerId"`
+	OperatorId       string   `json:"operatorId"`
+	ApprovedBy       string   `json:"approvedBy"`
+	ApprovedAt       string   `json:"approvedAt"`
+	CancelledBy      string   `json:"cancelledBy"`
+	CancelledAt      string   `json:"cancelledAt"`
 	GitBranch        string   `json:"gitBranch"`
 	GitHeadCommit    string   `json:"gitHeadCommit"`
 	GitDirty         bool     `json:"gitDirty"`
@@ -119,7 +170,7 @@ type TaskItem struct {
 	Mode             string `json:"mode"`
 	Status           string `json:"status"`
 	ApprovalRequired bool   `json:"approvalRequired"`
-	CreatedBy        string `json:"createdBy"`
+	CreatorId        string `json:"creatorId"`
 	GitBranch        string `json:"gitBranch"`
 	GitHeadCommit    string `json:"gitHeadCommit"`
 	GitDirty         bool   `json:"gitDirty"`
@@ -133,4 +184,8 @@ type TaskListResp struct {
 
 type TaskLogsResp struct {
 	Items []LogItem `json:"items"`
+}
+
+type TaskStatusHistoriesResp struct {
+	Items []StatusHistoryItem `json:"items"`
 }
