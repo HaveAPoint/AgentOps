@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	authctx "agentops/internal/auth"
 	"agentops/internal/model"
 	"agentops/internal/svc"
 	"agentops/internal/types"
@@ -38,10 +39,15 @@ func (l *StartTaskLogic) StartTask(req *types.StartTaskReq) (resp *types.StartTa
 		return nil, ErrTaskIDRequired
 	}
 
-	operatorID := strings.TrimSpace(req.OperatorId)
-	if operatorID == "" {
-		return nil, ErrOperatorIDRequired
+	actor, err := authctx.CurrentUserFromContext(l.ctx)
+	if err != nil {
+		return nil, err
 	}
+	if actor.SystemRole != authctx.SystemRoleOperator {
+		return nil, ErrPermissionDenied
+	}
+
+	operatorID := actor.ID
 
 	taskID, err := strconv.ParseInt(idText, 10, 64)
 	if err != nil || taskID <= 0 {
@@ -70,8 +76,8 @@ func (l *StartTaskLogic) StartTask(req *types.StartTaskReq) (resp *types.StartTa
 
 	now := time.Now().UTC()
 
-	if task.OperatorId.Valid && task.OperatorId.String != operatorID {
-		return nil, ErrOperatorIDMismatch
+	if !task.OperatorId.Valid || task.OperatorId.String != operatorID {
+		return nil, ErrPermissionDenied
 	}
 
 	if _, err = l.svcCtx.TaskModel.Start(l.ctx, tx, taskID, operatorID); err != nil {

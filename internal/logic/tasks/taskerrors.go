@@ -28,4 +28,5 @@ var (
 	ErrRepoHasNoCommits          = errors.New("git repository has no commits yet")
 	ErrTaskNotRunning            = errors.New("task is not running")
 	ErrRunningExecutionNotFound  = errors.New("running execution not found")
+	ErrPermissionDenied          = errors.New("permission denied")
 )

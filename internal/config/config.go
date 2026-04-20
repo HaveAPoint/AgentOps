@@ -17,7 +17,13 @@ type PostgresConf struct {
 	ConnMaxLifetimeSeconds int
 }
 
+type AuthConf struct {
+	AccessSecret string
+	AccessExpire int64
+}
+
 type Config struct {
 	rest.RestConf
+	Auth     AuthConf
 	Postgres PostgresConf
 }

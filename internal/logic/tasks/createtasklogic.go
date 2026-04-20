@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	authctx "agentops/internal/auth"
 	"agentops/internal/gitctx"
 	"agentops/internal/model"
 	"agentops/internal/svc"
@@ -46,10 +47,11 @@ func (l *CreateTaskLogic) CreateTask(req *types.CreateTaskReq) (resp *types.Crea
 		return nil, ErrPromptRequired
 	}
 
-	creatorID := strings.TrimSpace(req.CreatorId)
-	if creatorID == "" {
-		return nil, ErrCreatorIDRequired
+	creator, err := authctx.CurrentUserFromContext(l.ctx)
+	if err != nil {
+		return nil, err
 	}
+	creatorID := creator.ID
 
 	reviewerID := strings.TrimSpace(req.ReviewerId)
 	operatorID := strings.TrimSpace(req.OperatorId)

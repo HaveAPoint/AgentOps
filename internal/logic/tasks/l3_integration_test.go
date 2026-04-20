@@ -15,7 +15,9 @@ import (
 	"testing"
 	"time"
 
+	authctx "agentops/internal/auth"
 	"agentops/internal/config"
+	authlogic "agentops/internal/logic/auth"
 	"agentops/internal/model"
 	"agentops/internal/svc"
 	"agentops/internal/types"
@@ -65,7 +67,14 @@ func newL2TestApp(t *testing.T) *l2TestApp {
 		db:      db,
 		repoDir: repoDir,
 		svcCtx: &svc.ServiceContext{
+			Config: config.Config{
+				Auth: config.AuthConf{
+					AccessSecret: "agentops-l3-test-secret",
+					AccessExpire: 3600,
+				},
+			},
 			DB:                     db,
+			UserModel:              model.NewUserModel(db),
 			TaskModel:              model.NewTaskModel(db),
 			TaskPolicyModel:        model.NewTaskPolicyModel(db),
 			AuditLogModel:          model.NewAuditLogModel(db),
@@ -89,15 +98,38 @@ func newL2TestApp(t *testing.T) *l2TestApp {
 	return app
 }
 
+func TestL3LoginSuccessAndFailure(t *testing.T) {
+	app := newL2TestApp(t)
+
+	loginLogic := authlogic.NewLoginLogic(context.Background(), app.svcCtx)
+	resp, err := loginLogic.Login(&types.LoginReq{
+		Username: "creator-1",
+		Password: "password",
+	})
+	if err != nil {
+		t.Fatalf("login success: %v", err)
+	}
+	if resp.AccessToken == "" || resp.ExpiresIn != 3600 {
+		t.Fatalf("unexpected login response: %+v", resp)
+	}
+
+	if _, err := loginLogic.Login(&types.LoginReq{
+		Username: "creator-1",
+		Password: "wrong",
+	}); !errors.Is(err, authlogic.ErrInvalidCredentials) {
+		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
+	}
+}
+
 func TestL2CreateTaskAndQueryStatusHistory(t *testing.T) {
 	app := newL2TestApp(t)
 
-	createLogic := NewCreateTaskLogic(context.Background(), app.svcCtx)
+	creatorCtx := testActorContext("creator-1", authctx.SystemRoleViewer)
+	createLogic := NewCreateTaskLogic(creatorCtx, app.svcCtx)
 	resp, err := createLogic.CreateTask(&types.CreateTaskReq{
 		Title:            "l2 create history",
 		RepoPath:         app.repoDir,
 		Prompt:           "trace status history",
-		CreatorId:        "creator-1",
 		ReviewerId:       "reviewer-1",
 		OperatorId:       "operator-1",
 		Mode:             TaskModeAnalyze,
@@ -111,7 +143,7 @@ func TestL2CreateTaskAndQueryStatusHistory(t *testing.T) {
 		t.Fatalf("unexpected create status: %s", resp.Status)
 	}
 
-	historyLogic := NewGetTaskStatusHistoriesLogic(context.Background(), app.svcCtx)
+	historyLogic := NewGetTaskStatusHistoriesLogic(creatorCtx, app.svcCtx)
 	historyResp, err := historyLogic.GetTaskStatusHistories(&types.GetTaskStatusHistoriesReq{Id: resp.Id})
 	if err != nil {
 		t.Fatalf("get status histories: %v", err)
@@ -133,12 +165,11 @@ func TestL2CreateTaskRejectsNonGitRepo(t *testing.T) {
 	app := newL2TestApp(t)
 
 	nonGitDir := t.TempDir()
-	createLogic := NewCreateTaskLogic(context.Background(), app.svcCtx)
+	createLogic := NewCreateTaskLogic(testActorContext("creator-1", authctx.SystemRoleViewer), app.svcCtx)
 	_, err := createLogic.CreateTask(&types.CreateTaskReq{
 		Title:            "not git",
 		RepoPath:         nonGitDir,
 		Prompt:           "should fail",
-		CreatorId:        "creator-1",
 		Mode:             TaskModeAnalyze,
 		ApprovalRequired: false,
 		MaxSteps:         1,
@@ -155,7 +186,6 @@ func TestL2ApproveStartSucceedFlowAndRepeatGuards(t *testing.T) {
 		Title:            "approve-start-succeed",
 		RepoPath:         app.repoDir,
 		Prompt:           "full happy path",
-		CreatorId:        "creator-1",
 		ReviewerId:       "reviewer-1",
 		OperatorId:       "operator-1",
 		Mode:             TaskModePatch,
@@ -163,75 +193,67 @@ func TestL2ApproveStartSucceedFlowAndRepeatGuards(t *testing.T) {
 		MaxSteps:         5,
 	})
 
-	approveLogic := NewApproveTaskLogic(context.Background(), app.svcCtx)
-	if _, err := approveLogic.ApproveTask(&types.ApproveTaskReq{
-		Id:         taskID,
-		ReviewerId: "",
-	}); !errors.Is(err, ErrReviewerIDRequired) {
-		t.Fatalf("expected ErrReviewerIDRequired, got %v", err)
+	if _, err := NewApproveTaskLogic(testActorContext("creator-1", authctx.SystemRoleViewer), app.svcCtx).ApproveTask(&types.ApproveTaskReq{
+		Id: taskID,
+	}); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("expected ErrPermissionDenied, got %v", err)
 	}
-	if _, err := approveLogic.ApproveTask(&types.ApproveTaskReq{
-		Id:         taskID,
-		ReviewerId: "reviewer-2",
-	}); !errors.Is(err, ErrReviewerIDMismatch) {
-		t.Fatalf("expected ErrReviewerIDMismatch, got %v", err)
+	if _, err := NewApproveTaskLogic(testActorContext("reviewer-2", authctx.SystemRoleReviewer), app.svcCtx).ApproveTask(&types.ApproveTaskReq{
+		Id: taskID,
+	}); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("expected ErrPermissionDenied, got %v", err)
 	}
+	approveLogic := NewApproveTaskLogic(testActorContext("reviewer-1", authctx.SystemRoleReviewer), app.svcCtx)
 	if _, err := approveLogic.ApproveTask(&types.ApproveTaskReq{
-		Id:         taskID,
-		ReviewerId: "reviewer-1",
-		Reason:     "approved",
+		Id:     taskID,
+		Reason: "approved",
 	}); err != nil {
 		t.Fatalf("approve task: %v", err)
 	}
 	if _, err := approveLogic.ApproveTask(&types.ApproveTaskReq{
-		Id:         taskID,
-		ReviewerId: "reviewer-1",
+		Id: taskID,
 	}); !errors.Is(err, ErrTaskNotWaitingApproval) {
 		t.Fatalf("expected ErrTaskNotWaitingApproval, got %v", err)
 	}
 
-	startLogic := NewStartTaskLogic(context.Background(), app.svcCtx)
+	startLogic := NewStartTaskLogic(testActorContext("operator-2", authctx.SystemRoleOperator), app.svcCtx)
 	if _, err := startLogic.StartTask(&types.StartTaskReq{
-		Id:         taskID,
-		OperatorId: "operator-2",
-	}); !errors.Is(err, ErrOperatorIDMismatch) {
-		t.Fatalf("expected ErrOperatorIDMismatch, got %v", err)
+		Id: taskID,
+	}); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("expected ErrPermissionDenied, got %v", err)
 	}
+	startLogic = NewStartTaskLogic(testActorContext("operator-1", authctx.SystemRoleOperator), app.svcCtx)
 	if _, err := startLogic.StartTask(&types.StartTaskReq{
-		Id:         taskID,
-		OperatorId: "operator-1",
+		Id: taskID,
 	}); err != nil {
 		t.Fatalf("start task: %v", err)
 	}
 	if _, err := startLogic.StartTask(&types.StartTaskReq{
-		Id:         taskID,
-		OperatorId: "operator-1",
+		Id: taskID,
 	}); !errors.Is(err, ErrTaskNotPending) {
 		t.Fatalf("expected ErrTaskNotPending, got %v", err)
 	}
 
-	succeedLogic := NewSucceedTaskLogic(context.Background(), app.svcCtx)
+	succeedLogic := NewSucceedTaskLogic(testActorContext("operator-2", authctx.SystemRoleOperator), app.svcCtx)
 	if _, err := succeedLogic.SucceedTask(&types.SucceedTaskReq{
-		Id:         taskID,
-		OperatorId: "operator-2",
-	}); !errors.Is(err, ErrOperatorIDMismatch) {
-		t.Fatalf("expected ErrOperatorIDMismatch, got %v", err)
+		Id: taskID,
+	}); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("expected ErrPermissionDenied, got %v", err)
 	}
+	succeedLogic = NewSucceedTaskLogic(testActorContext("operator-1", authctx.SystemRoleOperator), app.svcCtx)
 	if _, err := succeedLogic.SucceedTask(&types.SucceedTaskReq{
 		Id:            taskID,
-		OperatorId:    "operator-1",
 		ResultSummary: "done",
 	}); err != nil {
 		t.Fatalf("succeed task: %v", err)
 	}
 	if _, err := succeedLogic.SucceedTask(&types.SucceedTaskReq{
-		Id:         taskID,
-		OperatorId: "operator-1",
+		Id: taskID,
 	}); !errors.Is(err, ErrTaskNotRunning) {
 		t.Fatalf("expected ErrTaskNotRunning, got %v", err)
 	}
 
-	execLogic := NewGetTaskExecutionsLogic(context.Background(), app.svcCtx)
+	execLogic := NewGetTaskExecutionsLogic(testActorContext("operator-1", authctx.SystemRoleOperator), app.svcCtx)
 	execResp, err := execLogic.GetTaskExecutions(&types.GetTaskExecutionsReq{Id: taskID})
 	if err != nil {
 		t.Fatalf("get executions: %v", err)
@@ -243,7 +265,7 @@ func TestL2ApproveStartSucceedFlowAndRepeatGuards(t *testing.T) {
 		t.Fatalf("unexpected execution item: %+v", execResp.Items[0])
 	}
 
-	historyLogic := NewGetTaskStatusHistoriesLogic(context.Background(), app.svcCtx)
+	historyLogic := NewGetTaskStatusHistoriesLogic(testActorContext("creator-1", authctx.SystemRoleViewer), app.svcCtx)
 	historyResp, err := historyLogic.GetTaskStatusHistories(&types.GetTaskStatusHistoriesReq{Id: taskID})
 	if err != nil {
 		t.Fatalf("get status histories: %v", err)
@@ -271,31 +293,27 @@ func TestL2FailAndCancelBehaviors(t *testing.T) {
 		Title:            "cancel pending",
 		RepoPath:         app.repoDir,
 		Prompt:           "cancel",
-		CreatorId:        "creator-1",
 		Mode:             TaskModeAnalyze,
 		ApprovalRequired: false,
 		MaxSteps:         2,
 	})
 
-	cancelLogic := NewCancelTaskLogic(context.Background(), app.svcCtx)
+	cancelLogic := NewCancelTaskLogic(testActorContext("creator-2", authctx.SystemRoleViewer), app.svcCtx)
 	if _, err := cancelLogic.CancelTask(&types.CancelTaskReq{
-		Id:        pendingTaskID,
-		ActorId:   "creator-2",
-		ActorRole: "creator",
-	}); !errors.Is(err, ErrCancelActorNotAllowed) {
-		t.Fatalf("expected ErrCancelActorNotAllowed, got %v", err)
+		Id: pendingTaskID,
+	}); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("expected ErrPermissionDenied, got %v", err)
 	}
 
+	cancelLogic = NewCancelTaskLogic(testActorContext("creator-1", authctx.SystemRoleViewer), app.svcCtx)
 	if _, err := cancelLogic.CancelTask(&types.CancelTaskReq{
-		Id:        pendingTaskID,
-		ActorId:   "creator-1",
-		ActorRole: "creator",
-		Reason:    "stop here",
+		Id:     pendingTaskID,
+		Reason: "stop here",
 	}); err != nil {
 		t.Fatalf("cancel task: %v", err)
 	}
 
-	getLogic := NewGetTaskLogic(context.Background(), app.svcCtx)
+	getLogic := NewGetTaskLogic(testActorContext("creator-1", authctx.SystemRoleViewer), app.svcCtx)
 	taskResp, err := getLogic.GetTask(&types.GetTaskReq{Id: pendingTaskID})
 	if err != nil {
 		t.Fatalf("get task: %v", err)
@@ -308,47 +326,40 @@ func TestL2FailAndCancelBehaviors(t *testing.T) {
 		Title:            "fail running",
 		RepoPath:         app.repoDir,
 		Prompt:           "fail path",
-		CreatorId:        "creator-1",
 		OperatorId:       "operator-1",
 		Mode:             TaskModePatch,
 		ApprovalRequired: false,
 		MaxSteps:         2,
 	})
 
-	startLogic := NewStartTaskLogic(context.Background(), app.svcCtx)
+	startLogic := NewStartTaskLogic(testActorContext("operator-1", authctx.SystemRoleOperator), app.svcCtx)
 	if _, err := startLogic.StartTask(&types.StartTaskReq{
-		Id:         runningTaskID,
-		OperatorId: "operator-1",
+		Id: runningTaskID,
 	}); err != nil {
 		t.Fatalf("start running task: %v", err)
 	}
 
 	if _, err := cancelLogic.CancelTask(&types.CancelTaskReq{
-		Id:        runningTaskID,
-		ActorId:   "creator-1",
-		ActorRole: "creator",
+		Id: runningTaskID,
 	}); !errors.Is(err, ErrTaskCannotBeCancelled) {
 		t.Fatalf("expected ErrTaskCannotBeCancelled, got %v", err)
 	}
 
-	failLogic := NewFailTaskLogic(context.Background(), app.svcCtx)
+	failLogic := NewFailTaskLogic(testActorContext("operator-1", authctx.SystemRoleOperator), app.svcCtx)
 	if _, err := failLogic.FailTask(&types.FailTaskReq{
-		Id:         runningTaskID,
-		OperatorId: "operator-1",
+		Id: runningTaskID,
 	}); !errors.Is(err, ErrErrorMessageRequired) {
 		t.Fatalf("expected ErrErrorMessageRequired, got %v", err)
 	}
-	if _, err := failLogic.FailTask(&types.FailTaskReq{
+	if _, err := NewFailTaskLogic(testActorContext("operator-2", authctx.SystemRoleOperator), app.svcCtx).FailTask(&types.FailTaskReq{
 		Id:            runningTaskID,
-		OperatorId:    "operator-2",
 		ResultSummary: "partial",
 		ErrorMessage:  "boom",
-	}); !errors.Is(err, ErrOperatorIDMismatch) {
-		t.Fatalf("expected ErrOperatorIDMismatch, got %v", err)
+	}); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("expected ErrPermissionDenied, got %v", err)
 	}
 	if _, err := failLogic.FailTask(&types.FailTaskReq{
 		Id:            runningTaskID,
-		OperatorId:    "operator-1",
 		ResultSummary: "partial",
 		ErrorMessage:  "boom",
 	}); err != nil {
@@ -356,13 +367,12 @@ func TestL2FailAndCancelBehaviors(t *testing.T) {
 	}
 	if _, err := failLogic.FailTask(&types.FailTaskReq{
 		Id:           runningTaskID,
-		OperatorId:   "operator-1",
 		ErrorMessage: "boom again",
 	}); !errors.Is(err, ErrTaskNotRunning) {
 		t.Fatalf("expected ErrTaskNotRunning, got %v", err)
 	}
 
-	execLogic := NewGetTaskExecutionsLogic(context.Background(), app.svcCtx)
+	execLogic := NewGetTaskExecutionsLogic(testActorContext("operator-1", authctx.SystemRoleOperator), app.svcCtx)
 	execResp, err := execLogic.GetTaskExecutions(&types.GetTaskExecutionsReq{Id: runningTaskID})
 	if err != nil {
 		t.Fatalf("get executions after fail: %v", err)
@@ -382,7 +392,6 @@ func TestL2ConcurrentApproveOnlyOneSucceeds(t *testing.T) {
 		Title:            "concurrent approve",
 		RepoPath:         app.repoDir,
 		Prompt:           "approve race",
-		CreatorId:        "creator-1",
 		ReviewerId:       "reviewer-1",
 		Mode:             TaskModeAnalyze,
 		ApprovalRequired: true,
@@ -390,9 +399,8 @@ func TestL2ConcurrentApproveOnlyOneSucceeds(t *testing.T) {
 	})
 
 	errs := runConcurrently(4, func() error {
-		_, err := NewApproveTaskLogic(context.Background(), app.svcCtx).ApproveTask(&types.ApproveTaskReq{
-			Id:         taskID,
-			ReviewerId: "reviewer-1",
+		_, err := NewApproveTaskLogic(testActorContext("reviewer-1", authctx.SystemRoleReviewer), app.svcCtx).ApproveTask(&types.ApproveTaskReq{
+			Id: taskID,
 		})
 		return err
 	})
@@ -407,7 +415,6 @@ func TestL2ConcurrentStartOnlyOneSucceeds(t *testing.T) {
 		Title:            "concurrent start",
 		RepoPath:         app.repoDir,
 		Prompt:           "start race",
-		CreatorId:        "creator-1",
 		OperatorId:       "operator-1",
 		Mode:             TaskModePatch,
 		ApprovalRequired: false,
@@ -415,9 +422,8 @@ func TestL2ConcurrentStartOnlyOneSucceeds(t *testing.T) {
 	})
 
 	errs := runConcurrently(4, func() error {
-		_, err := NewStartTaskLogic(context.Background(), app.svcCtx).StartTask(&types.StartTaskReq{
-			Id:         taskID,
-			OperatorId: "operator-1",
+		_, err := NewStartTaskLogic(testActorContext("operator-1", authctx.SystemRoleOperator), app.svcCtx).StartTask(&types.StartTaskReq{
+			Id: taskID,
 		})
 		return err
 	})
@@ -428,12 +434,20 @@ func TestL2ConcurrentStartOnlyOneSucceeds(t *testing.T) {
 func createTaskForTest(t *testing.T, app *l2TestApp, req types.CreateTaskReq) string {
 	t.Helper()
 
-	resp, err := NewCreateTaskLogic(context.Background(), app.svcCtx).CreateTask(&req)
+	resp, err := NewCreateTaskLogic(testActorContext("creator-1", authctx.SystemRoleViewer), app.svcCtx).CreateTask(&req)
 	if err != nil {
 		t.Fatalf("create task for test: %v", err)
 	}
 
 	return resp.Id
+}
+
+func testActorContext(id string, role string) context.Context {
+	return authctx.WithCurrentUser(context.Background(), authctx.CurrentUser{
+		ID:         id,
+		Username:   id,
+		SystemRole: role,
+	})
 }
 
 func runConcurrently(n int, fn func() error) []error {
@@ -484,22 +498,58 @@ func assertConcurrencyOutcome(t *testing.T, errs []error, expectedErr error) {
 func applyMigrations(t *testing.T, db *sql.DB, repoDir string) {
 	t.Helper()
 
-	content, err := os.ReadFile(filepath.Join(repoDir, "migrations", "0001_init.sql"))
-	if err != nil {
-		t.Fatalf("read migration: %v", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for _, name := range []string{
+		"0001_init.sql",
+		"0003_l3_auth_and_visibility.sql",
+	} {
+		content, err := os.ReadFile(filepath.Join(repoDir, "migrations", name))
+		if err != nil {
+			t.Fatalf("read migration %s: %v", name, err)
+		}
+
+		statements := strings.Split(string(content), ";")
+		for _, statement := range statements {
+			stmt := strings.TrimSpace(statement)
+			if stmt == "" {
+				continue
+			}
+			if _, err := db.ExecContext(ctx, stmt); err != nil {
+				t.Fatalf("apply migration %s statement %q: %v", name, stmt, err)
+			}
+		}
 	}
+
+	seedL3Users(t, db)
+}
+
+func seedL3Users(t *testing.T, db *sql.DB) {
+	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	statements := strings.Split(string(content), ";")
-	for _, statement := range statements {
-		stmt := strings.TrimSpace(statement)
-		if stmt == "" {
-			continue
-		}
-		if _, err := db.ExecContext(ctx, stmt); err != nil {
-			t.Fatalf("apply migration statement %q: %v", stmt, err)
+	passwordHash, err := authctx.HashPassword("password")
+	if err != nil {
+		t.Fatalf("hash test password: %v", err)
+	}
+
+	users := []model.User{
+		{ID: "admin-1", Username: "admin-1", PasswordHash: passwordHash, SystemRole: authctx.SystemRoleAdmin},
+		{ID: "creator-1", Username: "creator-1", PasswordHash: passwordHash, SystemRole: authctx.SystemRoleViewer},
+		{ID: "creator-2", Username: "creator-2", PasswordHash: passwordHash, SystemRole: authctx.SystemRoleViewer},
+		{ID: "reviewer-1", Username: "reviewer-1", PasswordHash: passwordHash, SystemRole: authctx.SystemRoleReviewer},
+		{ID: "reviewer-2", Username: "reviewer-2", PasswordHash: passwordHash, SystemRole: authctx.SystemRoleReviewer},
+		{ID: "operator-1", Username: "operator-1", PasswordHash: passwordHash, SystemRole: authctx.SystemRoleOperator},
+		{ID: "operator-2", Username: "operator-2", PasswordHash: passwordHash, SystemRole: authctx.SystemRoleOperator},
+	}
+
+	userModel := model.NewUserModel(db)
+	for _, user := range users {
+		if err := userModel.Insert(ctx, db, &user); err != nil {
+			t.Fatalf("seed user %s: %v", user.ID, err)
 		}
 	}
 }

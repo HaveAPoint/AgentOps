@@ -2,6 +2,11 @@ Name: agentops-api
 Host: 0.0.0.0
 Port: 8888
 
+
+Auth:
+  AccessSecret: agentops-l3-dev-secret
+  AccessExpire: 3600
+
 Postgres:
   Host: 127.0.0.1
   Port: 5432
@@ -12,3 +17,4 @@ Postgres:
   MaxOpenConns: 10
   MaxIdleConns: 5
   ConnMaxLifetimeSeconds: 600
+

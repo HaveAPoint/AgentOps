@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	authctx "agentops/internal/auth"
 	"agentops/internal/model"
 	"agentops/internal/svc"
 	"agentops/internal/types"
@@ -38,11 +39,15 @@ func (l *SucceedTaskLogic) SucceedTask(req *types.SucceedTaskReq) (resp *types.S
 		return nil, ErrTaskIDRequired
 	}
 
-	operatorID := strings.TrimSpace(req.OperatorId)
-	if operatorID == "" {
-		return nil, ErrOperatorIDRequired
+	actor, err := authctx.CurrentUserFromContext(l.ctx)
+	if err != nil {
+		return nil, err
+	}
+	if actor.SystemRole != authctx.SystemRoleOperator {
+		return nil, ErrPermissionDenied
 	}
 
+	operatorID := actor.ID
 	resultSummary := strings.TrimSpace(req.ResultSummary)
 
 	taskID, err := strconv.ParseInt(idText, 10, 64)
@@ -78,12 +83,12 @@ func (l *SucceedTaskLogic) SucceedTask(req *types.SucceedTaskReq) (resp *types.S
 		return nil, err
 	}
 
-	if task.OperatorId.Valid && task.OperatorId.String != operatorID {
-		return nil, ErrOperatorIDMismatch
+	if !task.OperatorId.Valid || task.OperatorId.String != operatorID {
+		return nil, ErrPermissionDenied
 	}
 
 	if execution.OperatorId != operatorID {
-		return nil, ErrExecutionOperatorMismatch
+		return nil, ErrPermissionDenied
 	}
 
 	finishedAt := time.Now().UTC()

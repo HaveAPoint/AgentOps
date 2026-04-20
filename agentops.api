@@ -13,7 +13,6 @@ type (
 		Title            string   `json:"title"`
 		RepoPath         string   `json:"repoPath"`
 		Prompt           string   `json:"prompt"`
-		CreatorId        string   `json:"creatorId"`
 		ReviewerId       string   `json:"reviewerId,optional"`
 		OperatorId       string   `json:"operatorId,optional"`
 		Mode             string   `json:"mode,options=analyze|patch"`
@@ -74,17 +73,15 @@ type (
 		UpdatedAt        string   `json:"updatedAt"`
 	}
 	ApproveTaskReq {
-		Id         string `path:"id"`
-		ReviewerId string `json:"reviewerId"`
-		Reason     string `json:"reason,optional"`
+		Id     string `path:"id"`
+		Reason string `json:"reason,optional"`
 	}
 	ApproveTaskResp {
 		Id     string `json:"id"`
 		Status string `json:"status"`
 	}
 	StartTaskReq {
-		Id         string `path:"id"`
-		OperatorId string `json:"operatorId"`
+		Id string `path:"id"`
 	}
 	StartTaskResp {
 		Id     string `json:"id"`
@@ -92,7 +89,6 @@ type (
 	}
 	SucceedTaskReq {
 		Id            string `path:"id"`
-		OperatorId    string `json:"operatorId"`
 		ResultSummary string `json:"resultSummary,optional"`
 	}
 	SucceedTaskResp {
@@ -101,7 +97,6 @@ type (
 	}
 	FailTaskReq {
 		Id            string `path:"id"`
-		OperatorId    string `json:"operatorId"`
 		ResultSummary string `json:"resultSummary,optional"`
 		ErrorMessage  string `json:"errorMessage"`
 	}
@@ -110,10 +105,8 @@ type (
 		Status string `json:"status"`
 	}
 	CancelTaskReq {
-		Id        string `path:"id"`
-		ActorId   string `json:"actorId"`
-		ActorRole string `json:"actorRole,options=creator|reviewer|admin"`
-		Reason    string `json:"reason,optional"`
+		Id     string `path:"id"`
+		Reason string `json:"reason,optional"`
 	}
 	CancelTaskResp {
 		Id     string `json:"id"`
@@ -175,6 +168,7 @@ service agentops-api {
 @server (
 	group:  tasks
 	prefix: /api/v1
+	jwt:    Auth
 )
 service agentops-api {
 	@handler CreateTask

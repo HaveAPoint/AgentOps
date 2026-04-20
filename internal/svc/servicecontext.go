@@ -11,6 +11,7 @@ import (
 type ServiceContext struct {
 	Config                 config.Config
 	DB                     *sql.DB
+	UserModel              *model.UserModel
 	TaskModel              *model.TaskModel
 	TaskPolicyModel        *model.TaskPolicyModel
 	AuditLogModel          *model.AuditLogModel
@@ -28,6 +29,7 @@ func NewServiceContext(c config.Config) *ServiceContext {
 	return &ServiceContext{
 		Config:                 c,
 		DB:                     db,
+		UserModel:              model.NewUserModel(db),
 		TaskModel:              model.NewTaskModel(db),
 		TaskPolicyModel:        model.NewTaskPolicyModel(db),
 		AuditLogModel:          model.NewAuditLogModel(db),

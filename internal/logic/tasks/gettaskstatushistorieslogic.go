@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	authctx "agentops/internal/auth"
 	"agentops/internal/svc"
 	"agentops/internal/types"
 
@@ -42,11 +43,21 @@ func (l *GetTaskStatusHistoriesLogic) GetTaskStatusHistories(req *types.GetTaskS
 		return nil, ErrInvalidTaskID
 	}
 
-	if _, err = l.svcCtx.TaskModel.FindByID(l.ctx, taskID); err != nil {
+	actor, err := authctx.CurrentUserFromContext(l.ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	task, err := l.svcCtx.TaskModel.FindByID(l.ctx, taskID)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrTaskNotFound
 		}
 		return nil, err
+	}
+
+	if !canViewTask(actor, *task) {
+		return nil, ErrTaskNotFound
 	}
 
 	histories, err := l.svcCtx.TaskStatusHistoryModel.ListByTaskID(l.ctx, taskID)

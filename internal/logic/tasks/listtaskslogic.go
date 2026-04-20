@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"time"
 
+	authctx "agentops/internal/auth"
+	"agentops/internal/model"
 	"agentops/internal/svc"
 	"agentops/internal/types"
 
@@ -29,13 +31,26 @@ func NewListTasksLogic(ctx context.Context, svcCtx *svc.ServiceContext) *ListTas
 }
 
 func (l *ListTasksLogic) ListTasks() (resp *types.TaskListResp, err error) {
+	actor, err := authctx.CurrentUserFromContext(l.ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	tasks, err := l.svcCtx.TaskModel.List(l.ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	items := make([]types.TaskItem, 0, len(tasks))
+	visibleTasks := make([]model.Task, 0, len(tasks))
 	for _, task := range tasks {
+		if canViewTask(actor, task) {
+			visibleTasks = append(visibleTasks, task)
+		}
+	}
+
+	items := make([]types.TaskItem, 0, len(visibleTasks))
+
+	for _, task := range visibleTasks {
 		items = append(items, types.TaskItem{
 			Id:               strconv.FormatInt(task.ID, 10),
 			Title:            task.Title,
@@ -55,4 +70,24 @@ func (l *ListTasksLogic) ListTasks() (resp *types.TaskListResp, err error) {
 	return &types.TaskListResp{
 		Items: items,
 	}, nil
+}
+
+func canViewTask(actor authctx.CurrentUser, task model.Task) bool {
+	if actor.SystemRole == authctx.SystemRoleAdmin {
+		return true
+	}
+
+	if task.CreatorId == actor.ID {
+		return true
+	}
+
+	if task.ReviewerId.Valid && task.ReviewerId.String == actor.ID {
+		return true
+	}
+
+	if task.OperatorId.Valid && task.OperatorId.String == actor.ID {
+		return true
+	}
+
+	return false
 }

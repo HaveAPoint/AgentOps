@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	authctx "agentops/internal/auth"
 	"agentops/internal/model"
 	"agentops/internal/svc"
 	"agentops/internal/types"
@@ -38,13 +39,16 @@ func (l *ApproveTaskLogic) ApproveTask(req *types.ApproveTaskReq) (resp *types.A
 		return nil, ErrTaskIDRequired
 	}
 
-	reviewerID := strings.TrimSpace(req.ReviewerId)
-	if reviewerID == "" {
-		return nil, ErrReviewerIDRequired
+	actor, err := authctx.CurrentUserFromContext(l.ctx)
+	if err != nil {
+		return nil, err
+	}
+	if actor.SystemRole != authctx.SystemRoleReviewer {
+		return nil, ErrPermissionDenied
 	}
 
+	reviewerID := actor.ID
 	reason := strings.TrimSpace(req.Reason)
-
 	taskID, err := strconv.ParseInt(idText, 10, 64)
 	if err != nil || taskID <= 0 {
 		return nil, ErrInvalidTaskID
@@ -70,8 +74,8 @@ func (l *ApproveTaskLogic) ApproveTask(req *types.ApproveTaskReq) (resp *types.A
 		return nil, ErrTaskNotWaitingApproval
 	}
 
-	if task.ReviewerId.Valid && task.ReviewerId.String != reviewerID {
-		return nil, ErrReviewerIDMismatch
+	if !task.ReviewerId.Valid || task.ReviewerId.String != reviewerID {
+		return nil, ErrPermissionDenied
 	}
 
 	approvedAt := time.Now().UTC()

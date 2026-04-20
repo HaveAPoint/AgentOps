@@ -4,9 +4,8 @@
 package types
 
 type ApproveTaskReq struct {
-	Id         string `path:"id"`
-	ReviewerId string `json:"reviewerId"`
-	Reason     string `json:"reason,optional"`
+	Id     string `path:"id"`
+	Reason string `json:"reason,optional"`
 }
 
 type ApproveTaskResp struct {
@@ -15,10 +14,8 @@ type ApproveTaskResp struct {
 }
 
 type CancelTaskReq struct {
-	Id        string `path:"id"`
-	ActorId   string `json:"actorId"`
-	ActorRole string `json:"actorRole,options=creator|reviewer|admin"`
-	Reason    string `json:"reason,optional"`
+	Id     string `path:"id"`
+	Reason string `json:"reason,optional"`
 }
 
 type CancelTaskResp struct {
@@ -30,7 +27,6 @@ type CreateTaskReq struct {
 	Title            string   `json:"title"`
 	RepoPath         string   `json:"repoPath"`
 	Prompt           string   `json:"prompt"`
-	CreatorId        string   `json:"creatorId"`
 	ReviewerId       string   `json:"reviewerId,optional"`
 	OperatorId       string   `json:"operatorId,optional"`
 	Mode             string   `json:"mode,options=analyze|patch"`
@@ -58,7 +54,6 @@ type ExecutionItem struct {
 
 type FailTaskReq struct {
 	Id            string `path:"id"`
-	OperatorId    string `json:"operatorId"`
 	ResultSummary string `json:"resultSummary,optional"`
 	ErrorMessage  string `json:"errorMessage"`
 }
@@ -103,8 +98,7 @@ type LoginResp struct {
 }
 
 type StartTaskReq struct {
-	Id         string `path:"id"`
-	OperatorId string `json:"operatorId"`
+	Id string `path:"id"`
 }
 
 type StartTaskResp struct {
@@ -125,7 +119,6 @@ type StatusHistoryItem struct {
 
 type SucceedTaskReq struct {
 	Id            string `path:"id"`
-	OperatorId    string `json:"operatorId"`
 	ResultSummary string `json:"resultSummary,optional"`
 }
 

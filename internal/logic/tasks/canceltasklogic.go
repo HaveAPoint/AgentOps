@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	authctx "agentops/internal/auth"
 	"agentops/internal/model"
 	"agentops/internal/svc"
 	"agentops/internal/types"
@@ -38,18 +39,12 @@ func (l *CancelTaskLogic) CancelTask(req *types.CancelTaskReq) (resp *types.Canc
 		return nil, ErrTaskIDRequired
 	}
 
-	actorID := strings.TrimSpace(req.ActorId)
-	if actorID == "" {
-		return nil, ErrCancelActorIDRequired
+	actor, err := authctx.CurrentUserFromContext(l.ctx)
+	if err != nil {
+		return nil, err
 	}
 
-	actorRole := strings.TrimSpace(req.ActorRole)
-	switch actorRole {
-	case "creator", "reviewer", "admin":
-	default:
-		return nil, ErrInvalidCancelActorRole
-	}
-
+	actorID := actor.ID
 	reason := strings.TrimSpace(req.Reason)
 
 	taskID, err := strconv.ParseInt(idText, 10, 64)
@@ -79,16 +74,18 @@ func (l *CancelTaskLogic) CancelTask(req *types.CancelTaskReq) (resp *types.Canc
 		return nil, ErrTaskCannotBeCancelled
 	}
 
-	switch actorRole {
-	case "creator":
-		if task.CreatorId != actorID {
-			return nil, ErrCancelActorNotAllowed
-		}
-	case "reviewer":
-		if !task.ReviewerId.Valid || task.ReviewerId.String != actorID {
-			return nil, ErrCancelActorNotAllowed
-		}
-	case "admin":
+	actorRole := ""
+	switch {
+	case actor.SystemRole == authctx.SystemRoleAdmin:
+		actorRole = "admin"
+	case task.CreatorId == actorID:
+		actorRole = "creator"
+	case actor.SystemRole == authctx.SystemRoleReviewer &&
+		task.ReviewerId.Valid &&
+		task.ReviewerId.String == actorID:
+		actorRole = "reviewer"
+	default:
+		return nil, ErrPermissionDenied
 	}
 
 	cancelledAt := time.Now().UTC()
