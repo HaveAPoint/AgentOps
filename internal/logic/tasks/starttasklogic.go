@@ -12,6 +12,7 @@ import (
 	"time"
 
 	authctx "agentops/internal/auth"
+	"agentops/internal/executor"
 	"agentops/internal/model"
 	"agentops/internal/svc"
 	"agentops/internal/types"
@@ -74,11 +75,25 @@ func (l *StartTaskLogic) StartTask(req *types.StartTaskReq) (resp *types.StartTa
 		return nil, ErrTaskNotPending
 	}
 
-	now := time.Now().UTC()
-
 	if !task.OperatorId.Valid || task.OperatorId.String != operatorID {
 		return nil, ErrPermissionDenied
 	}
+
+	if err = validateExecutionRepo(task.RepoPath, l.svcCtx.Config.Executor.AllowedRepoPaths); err != nil {
+		return nil, err
+	}
+
+	policy, err := l.svcCtx.TaskPolicyModel.FindByTaskID(l.ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = validateExecutionPolicy(task, policy); err != nil {
+		return nil, err
+	}
+
+	executionTimeout := l.svcCtx.Config.Executor.Timeout()
+	now := time.Now().UTC()
 
 	if _, err = l.svcCtx.TaskModel.Start(l.ctx, tx, taskID, operatorID); err != nil {
 		return nil, err
@@ -122,7 +137,7 @@ func (l *StartTaskLogic) StartTask(req *types.StartTaskReq) (resp *types.StartTa
 		TaskID:     taskID,
 		Step:       maxStep + 1,
 		Level:      "info",
-		Message:    "task started by operator: " + operatorID,
+		Message:    buildExecutionStartMessage(operatorID, task, policy, executionTimeout),
 		ToolName:   "api",
 		OccurredAt: now,
 	}); err != nil {
@@ -133,8 +148,65 @@ func (l *StartTaskLogic) StartTask(req *types.StartTaskReq) (resp *types.StartTa
 		return nil, err
 	}
 
+	runCtx, cancel := context.WithTimeout(l.ctx, executionTimeout)
+	defer cancel()
+
+	result, runErr := l.svcCtx.TaskRunner.Run(runCtx, executor.Request{
+		Task: executor.TaskInput{
+			ID:       task.ID,
+			Title:    task.Title,
+			Prompt:   task.Prompt,
+			Mode:     task.Mode,
+			MaxSteps: task.MaxSteps,
+		},
+		Operator: actor,
+		Repo: executor.RepoContext{
+			Path:       task.RepoPath,
+			Branch:     task.GitBranch,
+			HeadCommit: task.GitHeadCommit,
+			Dirty:      task.GitDirty,
+		},
+		Policy: executor.PolicyContext{
+			AllowedPaths: policy.AllowedPaths,
+			DeniedPaths:  policy.DeniedPaths,
+		},
+		Timeout: executionTimeout,
+	})
+	if runErr != nil {
+		failLogic := NewFailTaskLogic(l.ctx, l.svcCtx)
+		if _, err = failLogic.FailTask(&types.FailTaskReq{
+			Id:            strconv.FormatInt(taskID, 10),
+			ResultSummary: buildExecutorResultSummary(result),
+			ErrorMessage:  buildExecutorErrorMessage(runErr),
+		}); err != nil {
+			return nil, err
+		}
+
+		return &types.StartTaskResp{
+			Id:     strconv.FormatInt(taskID, 10),
+			Status: TaskStatusFailed,
+		}, nil
+	}
+
+	succeedLogic := NewSucceedTaskLogic(l.ctx, l.svcCtx)
+	if _, err = succeedLogic.SucceedTask(&types.SucceedTaskReq{
+		Id:            strconv.FormatInt(taskID, 10),
+		ResultSummary: buildExecutorResultSummary(result),
+	}); err != nil {
+		return nil, err
+	}
+
 	return &types.StartTaskResp{
 		Id:     strconv.FormatInt(taskID, 10),
-		Status: TaskStatusRunning,
+		Status: TaskStatusSucceeded,
 	}, nil
+}
+
+func buildExecutionStartMessage(operatorID string, task *model.Task, policy *model.TaskPolicy, timeout time.Duration) string {
+	return "task started by operator: " + operatorID +
+		", repo: " + task.RepoPath +
+		", mode: " + task.Mode +
+		", allowedPaths: [" + strings.Join(policy.AllowedPaths, ",") + "]" +
+		", deniedPaths: [" + strings.Join(policy.DeniedPaths, ",") + "]" +
+		", timeout: " + timeout.String()
 }

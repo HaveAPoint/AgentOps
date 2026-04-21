@@ -18,3 +18,7 @@ Postgres:
   MaxIdleConns: 5
   ConnMaxLifetimeSeconds: 600
 
+Executor:
+  TimeoutSeconds: 30
+  AllowedRepoPaths:
+    - "."

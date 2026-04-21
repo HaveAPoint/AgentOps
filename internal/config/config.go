@@ -3,7 +3,13 @@
 
 package config
 
-import "github.com/zeromicro/go-zero/rest"
+import (
+	"time"
+
+	"github.com/zeromicro/go-zero/rest"
+)
+
+const DefaultExecutorTimeoutSeconds int64 = 30
 
 type PostgresConf struct {
 	Host                   string
@@ -22,8 +28,21 @@ type AuthConf struct {
 	AccessExpire int64
 }
 
+type ExecutorConf struct {
+	TimeoutSeconds  int64
+	AllowedRepoPaths []string
+}
+
+func (c ExecutorConf) Timeout() time.Duration {
+	if c.TimeoutSeconds <= 0 {
+		return time.Duration(DefaultExecutorTimeoutSeconds) * time.Second
+	}
+	return time.Duration(c.TimeoutSeconds) * time.Second
+}
+
 type Config struct {
 	rest.RestConf
 	Auth     AuthConf
 	Postgres PostgresConf
+	Executor ExecutorConf
 }

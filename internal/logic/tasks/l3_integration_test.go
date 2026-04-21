@@ -17,6 +17,8 @@ import (
 
 	authctx "agentops/internal/auth"
 	"agentops/internal/config"
+	"agentops/internal/executor"
+	executormock "agentops/internal/executor/mock"
 	authlogic "agentops/internal/logic/auth"
 	"agentops/internal/model"
 	"agentops/internal/svc"
@@ -81,6 +83,7 @@ func newL2TestApp(t *testing.T) *l2TestApp {
 			ApprovalRecordModel:    model.NewApprovalRecordModel(db),
 			TaskExecutionModel:     model.NewTaskExecutionModel(db),
 			TaskStatusHistoryModel: model.NewTaskStatusHistoryModel(db),
+			TaskRunner:             executormock.NewRunner(),
 		},
 	}
 
@@ -191,6 +194,7 @@ func TestL2ApproveStartSucceedFlowAndRepeatGuards(t *testing.T) {
 		Mode:             TaskModePatch,
 		ApprovalRequired: true,
 		MaxSteps:         5,
+		AllowedPaths:     []string{"internal/logic/tasks"},
 	})
 
 	if _, err := NewApproveTaskLogic(testActorContext("creator-1", authctx.SystemRoleViewer), app.svcCtx).ApproveTask(&types.ApproveTaskReq{
@@ -223,10 +227,14 @@ func TestL2ApproveStartSucceedFlowAndRepeatGuards(t *testing.T) {
 		t.Fatalf("expected ErrPermissionDenied, got %v", err)
 	}
 	startLogic = NewStartTaskLogic(testActorContext("operator-1", authctx.SystemRoleOperator), app.svcCtx)
-	if _, err := startLogic.StartTask(&types.StartTaskReq{
+	startResp, err := startLogic.StartTask(&types.StartTaskReq{
 		Id: taskID,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("start task: %v", err)
+	}
+	if startResp.Status != TaskStatusSucceeded {
+		t.Fatalf("expected synced start to succeed, got %s", startResp.Status)
 	}
 	if _, err := startLogic.StartTask(&types.StartTaskReq{
 		Id: taskID,
@@ -235,18 +243,6 @@ func TestL2ApproveStartSucceedFlowAndRepeatGuards(t *testing.T) {
 	}
 
 	succeedLogic := NewSucceedTaskLogic(testActorContext("operator-2", authctx.SystemRoleOperator), app.svcCtx)
-	if _, err := succeedLogic.SucceedTask(&types.SucceedTaskReq{
-		Id: taskID,
-	}); !errors.Is(err, ErrPermissionDenied) {
-		t.Fatalf("expected ErrPermissionDenied, got %v", err)
-	}
-	succeedLogic = NewSucceedTaskLogic(testActorContext("operator-1", authctx.SystemRoleOperator), app.svcCtx)
-	if _, err := succeedLogic.SucceedTask(&types.SucceedTaskReq{
-		Id:            taskID,
-		ResultSummary: "done",
-	}); err != nil {
-		t.Fatalf("succeed task: %v", err)
-	}
 	if _, err := succeedLogic.SucceedTask(&types.SucceedTaskReq{
 		Id: taskID,
 	}); !errors.Is(err, ErrTaskNotRunning) {
@@ -261,7 +257,7 @@ func TestL2ApproveStartSucceedFlowAndRepeatGuards(t *testing.T) {
 	if len(execResp.Items) != 1 {
 		t.Fatalf("expected 1 execution, got %d", len(execResp.Items))
 	}
-	if execResp.Items[0].Status != TaskStatusSucceeded || execResp.Items[0].OperatorId != "operator-1" || execResp.Items[0].ResultSummary != "done" {
+	if execResp.Items[0].Status != TaskStatusSucceeded || execResp.Items[0].OperatorId != "operator-1" || execResp.Items[0].ResultSummary != "mock executor completed task" {
 		t.Fatalf("unexpected execution item: %+v", execResp.Items[0])
 	}
 
@@ -330,13 +326,19 @@ func TestL2FailAndCancelBehaviors(t *testing.T) {
 		Mode:             TaskModePatch,
 		ApprovalRequired: false,
 		MaxSteps:         2,
+		AllowedPaths:     []string{"internal/logic/tasks"},
 	})
 
+	app.svcCtx.TaskRunner = failingTestRunner{err: errors.New("boom")}
 	startLogic := NewStartTaskLogic(testActorContext("operator-1", authctx.SystemRoleOperator), app.svcCtx)
-	if _, err := startLogic.StartTask(&types.StartTaskReq{
+	startResp, err := startLogic.StartTask(&types.StartTaskReq{
 		Id: runningTaskID,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("start running task: %v", err)
+	}
+	if startResp.Status != TaskStatusFailed {
+		t.Fatalf("expected synced start to fail, got %s", startResp.Status)
 	}
 
 	if _, err := cancelLogic.CancelTask(&types.CancelTaskReq{
@@ -355,15 +357,8 @@ func TestL2FailAndCancelBehaviors(t *testing.T) {
 		Id:            runningTaskID,
 		ResultSummary: "partial",
 		ErrorMessage:  "boom",
-	}); !errors.Is(err, ErrPermissionDenied) {
-		t.Fatalf("expected ErrPermissionDenied, got %v", err)
-	}
-	if _, err := failLogic.FailTask(&types.FailTaskReq{
-		Id:            runningTaskID,
-		ResultSummary: "partial",
-		ErrorMessage:  "boom",
-	}); err != nil {
-		t.Fatalf("fail task: %v", err)
+	}); !errors.Is(err, ErrTaskNotRunning) {
+		t.Fatalf("expected ErrTaskNotRunning, got %v", err)
 	}
 	if _, err := failLogic.FailTask(&types.FailTaskReq{
 		Id:           runningTaskID,
@@ -419,6 +414,7 @@ func TestL2ConcurrentStartOnlyOneSucceeds(t *testing.T) {
 		Mode:             TaskModePatch,
 		ApprovalRequired: false,
 		MaxSteps:         2,
+		AllowedPaths:     []string{"internal/logic/tasks"},
 	})
 
 	errs := runConcurrently(4, func() error {
@@ -448,6 +444,16 @@ func testActorContext(id string, role string) context.Context {
 		Username:   id,
 		SystemRole: role,
 	})
+}
+
+type failingTestRunner struct {
+	err error
+}
+
+func (r failingTestRunner) Run(ctx context.Context, req executor.Request) (executor.Result, error) {
+	return executor.Result{
+		Summary: "test runner failed",
+	}, r.err
 }
 
 func runConcurrently(n int, fn func() error) []error {

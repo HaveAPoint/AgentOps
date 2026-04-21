@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"agentops/internal/config"
+	"agentops/internal/executor"
+	executormock "agentops/internal/executor/mock"
 	"agentops/internal/model"
 )
 
@@ -18,6 +20,7 @@ type ServiceContext struct {
 	ApprovalRecordModel    *model.ApprovalRecordModel
 	TaskExecutionModel     *model.TaskExecutionModel
 	TaskStatusHistoryModel *model.TaskStatusHistoryModel
+	TaskRunner             executor.Runner
 }
 
 func NewServiceContext(c config.Config) *ServiceContext {
@@ -36,5 +39,6 @@ func NewServiceContext(c config.Config) *ServiceContext {
 		ApprovalRecordModel:    model.NewApprovalRecordModel(db),
 		TaskExecutionModel:     model.NewTaskExecutionModel(db),
 		TaskStatusHistoryModel: model.NewTaskStatusHistoryModel(db),
+		TaskRunner:             executormock.NewRunner(),
 	}
 }
