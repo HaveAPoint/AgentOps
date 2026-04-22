@@ -69,26 +69,42 @@ func (l *CancelTaskLogic) CancelTask(req *types.CancelTaskReq) (resp *types.Canc
 	}
 
 	switch task.Status {
-	case TaskStatusPending, TaskStatusWaitingApproval:
+	case TaskStatusPending, TaskStatusWaitingApproval, TaskStatusRunning:
 	default:
 		return nil, ErrTaskCannotBeCancelled
 	}
 
-	actorRole := ""
-	switch {
-	case actor.SystemRole == authctx.SystemRoleAdmin:
-		actorRole = "admin"
-	case task.CreatorId == actorID:
-		actorRole = "creator"
-	case actor.SystemRole == authctx.SystemRoleReviewer &&
-		task.ReviewerId.Valid &&
-		task.ReviewerId.String == actorID:
-		actorRole = "reviewer"
-	default:
-		return nil, ErrPermissionDenied
+	actorRole, err := cancelActorRole(actor, task)
+	if err != nil {
+		return nil, err
 	}
 
 	cancelledAt := time.Now().UTC()
+
+	var runningExecution *model.TaskExecution
+	if task.Status == TaskStatusRunning {
+		runningExecution, err = l.svcCtx.TaskExecutionModel.FindLatestRunningByTaskIDForUpdate(l.ctx, tx, taskID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil, ErrRunningExecutionNotFound
+			}
+			return nil, err
+		}
+
+		if err = l.svcCtx.TaskExecutionModel.Finish(
+			l.ctx,
+			tx,
+			runningExecution.ID,
+			model.FinishExecutionParams{
+				Status:        TaskStatusCancelled,
+				FinishedAt:    cancelledAt,
+				ResultSummary: "",
+				ErrorMessage:  reason,
+			},
+		); err != nil {
+			return nil, err
+		}
+	}
 
 	if _, err = l.svcCtx.TaskModel.Cancel(l.ctx, tx, taskID, actorID, cancelledAt); err != nil {
 		return nil, err
@@ -134,8 +150,43 @@ func (l *CancelTaskLogic) CancelTask(req *types.CancelTaskReq) (resp *types.Canc
 		return nil, err
 	}
 
+	if task.Status == TaskStatusRunning {
+		l.svcCtx.ExecutionCancels.Cancel(taskID)
+	}
+
 	return &types.CancelTaskResp{
 		Id:     strconv.FormatInt(taskID, 10),
 		Status: TaskStatusCancelled,
 	}, nil
+}
+
+func cancelActorRole(actor authctx.CurrentUser, task *model.Task) (string, error) {
+	if actor.SystemRole == authctx.SystemRoleAdmin {
+		return "admin", nil
+	}
+
+	switch task.Status {
+	case TaskStatusWaitingApproval, TaskStatusPending:
+		switch {
+		case task.CreatorId == actor.ID:
+			return "creator", nil
+		case actor.SystemRole == authctx.SystemRoleReviewer &&
+			task.ReviewerId.Valid &&
+			task.ReviewerId.String == actor.ID:
+			return "reviewer", nil
+		default:
+			return "", ErrPermissionDenied
+		}
+
+	case TaskStatusRunning:
+		if actor.SystemRole == authctx.SystemRoleOperator &&
+			task.OperatorId.Valid &&
+			task.OperatorId.String == actor.ID {
+			return "operator", nil
+		}
+		return "", ErrPermissionDenied
+
+	default:
+		return "", ErrTaskCannotBeCancelled
+	}
 }

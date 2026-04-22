@@ -47,7 +47,8 @@ CREATE TABLE IF NOT EXISTS task_executions (
     status VARCHAR(32) NOT NULL CHECK (status IN (
         'running',
         'succeeded',
-        'failed'
+        'failed',
+        'cancelled'
     )),
     started_at TIMESTAMPTZ NOT NULL,
     finished_at TIMESTAMPTZ,

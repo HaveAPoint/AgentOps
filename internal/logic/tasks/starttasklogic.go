@@ -13,6 +13,7 @@ import (
 
 	authctx "agentops/internal/auth"
 	"agentops/internal/executor"
+	"agentops/internal/gitctx"
 	"agentops/internal/model"
 	"agentops/internal/svc"
 	"agentops/internal/types"
@@ -95,6 +96,11 @@ func (l *StartTaskLogic) StartTask(req *types.StartTaskReq) (resp *types.StartTa
 	executionTimeout := l.svcCtx.Config.Executor.Timeout()
 	now := time.Now().UTC()
 
+	changedFilesBefore, err := gitctx.ChangedFiles(task.RepoPath)
+	if err != nil {
+		return nil, err
+	}
+
 	if _, err = l.svcCtx.TaskModel.Start(l.ctx, tx, taskID, operatorID); err != nil {
 		return nil, err
 	}
@@ -149,6 +155,8 @@ func (l *StartTaskLogic) StartTask(req *types.StartTaskReq) (resp *types.StartTa
 	}
 
 	runCtx, cancel := context.WithTimeout(l.ctx, executionTimeout)
+	l.svcCtx.ExecutionCancels.Register(taskID, cancel)
+	defer l.svcCtx.ExecutionCancels.Unregister(taskID)
 	defer cancel()
 
 	result, runErr := l.svcCtx.TaskRunner.Run(runCtx, executor.Request{
@@ -172,11 +180,40 @@ func (l *StartTaskLogic) StartTask(req *types.StartTaskReq) (resp *types.StartTa
 		},
 		Timeout: executionTimeout,
 	})
+	changedFilesAfter, inspectErr := gitctx.ChangedFiles(task.RepoPath)
+	newChangedFiles := diffChangedFiles(changedFilesBefore, changedFilesAfter)
+
+	resultSummary := buildExecutorResultSummary(result)
+	resultSummary = appendGitChangedFilesSummary(resultSummary, changedFilesBefore, changedFilesAfter, newChangedFiles)
+
+	if inspectErr != nil && runErr == nil {
+		runErr = inspectErr
+	}
+
+	if runErr == nil {
+		if err = validateChangedFilesAllowed(task.Mode, policy, newChangedFiles); err != nil {
+			runErr = err
+		}
+	}
+
 	if runErr != nil {
+		if errors.Is(runErr, context.Canceled) {
+			cancelledTask, findErr := l.svcCtx.TaskModel.FindByID(l.ctx, taskID)
+			if findErr != nil {
+				return nil, findErr
+			}
+			if cancelledTask.Status == TaskStatusCancelled {
+				return &types.StartTaskResp{
+					Id:     strconv.FormatInt(taskID, 10),
+					Status: TaskStatusCancelled,
+				}, nil
+			}
+		}
+
 		failLogic := NewFailTaskLogic(l.ctx, l.svcCtx)
 		if _, err = failLogic.FailTask(&types.FailTaskReq{
 			Id:            strconv.FormatInt(taskID, 10),
-			ResultSummary: buildExecutorResultSummary(result),
+			ResultSummary: resultSummary,
 			ErrorMessage:  buildExecutorErrorMessage(runErr),
 		}); err != nil {
 			return nil, err
@@ -191,8 +228,23 @@ func (l *StartTaskLogic) StartTask(req *types.StartTaskReq) (resp *types.StartTa
 	succeedLogic := NewSucceedTaskLogic(l.ctx, l.svcCtx)
 	if _, err = succeedLogic.SucceedTask(&types.SucceedTaskReq{
 		Id:            strconv.FormatInt(taskID, 10),
-		ResultSummary: buildExecutorResultSummary(result),
+		ResultSummary: resultSummary,
 	}); err != nil {
+		if errors.Is(err, ErrTaskNotRunning) {
+			currentTask, findErr := l.svcCtx.TaskModel.FindByID(l.ctx, taskID)
+			if findErr != nil {
+				return nil, findErr
+			}
+
+			switch currentTask.Status {
+			case TaskStatusCancelled, TaskStatusFailed, TaskStatusSucceeded:
+				return &types.StartTaskResp{
+					Id:     strconv.FormatInt(taskID, 10),
+					Status: currentTask.Status,
+				}, nil
+			}
+		}
+
 		return nil, err
 	}
 

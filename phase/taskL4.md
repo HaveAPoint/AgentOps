@@ -18,6 +18,41 @@ L4 核心业务流
 - 平台记录执行过程与结果
 - 审计能够回答：谁发起、谁批准、谁执行、改了什么、结果如何
 
+当前实现进度（2026-04-22）
+
+当前 L4 约完成 55%-60%。
+
+已经真实生效：
+
+- 已抽出 `internal/executor` 执行器边界
+- `ServiceContext` 已注入 `TaskRunner`
+- `StartTask` 已能同步调用 mock executor
+- executor 成功后自动收口到 `succeeded`
+- executor 失败后自动收口到 `failed`
+- 执行 timeout 已接入 `context.WithTimeout`
+- repo 白名单已在执行前校验
+- `allowedPaths / deniedPaths` 已从快照数据推进到执行路径约束
+- `patch` 模式要求 `allowedPaths` 非空
+- executor 的 `stdout / stderr / summary` 已汇总进 execution result
+- Git changed files 已记录 before / after / new
+- 新增越权变更文件会导致执行收口到 `failed`
+- `running -> cancelled` 已能做数据库状态收口
+- cancel 权限已按状态拆分：`waiting_approval / pending` 由 creator / assigned reviewer / admin 取消，`running` 由 assigned operator / admin 取消
+
+当前只是够用版：
+
+- `newChangedFiles = after - before` 只能识别执行后新增进入 dirty 集合的文件
+- 如果执行前某个文件已经 dirty，executor 又继续修改它，当前还不能精确识别这次二次修改
+- 要达到更严格的工业级路径控制，后续需要 diff 摘要、diff hash 或执行前后 patch 对比
+- `running -> cancelled` 当前只完成数据库收口，还没有真实中断正在执行的 runner / CLI 进程
+
+仍未完成：
+
+- reviewer 审批语义还没有升级成“批准某 operator / mode / repo / path 范围”
+- 尚未接入真实 `codex / claudecode` provider
+- 还没有完整工作目录沙箱和真实 CLI 进程 kill
+- 执行审计仍是文本摘要，尚未结构化记录 diff / changed file 明细
+
 L4 要做的事
 
 1. 抽执行器模块，并围绕 operator 建立输入语义

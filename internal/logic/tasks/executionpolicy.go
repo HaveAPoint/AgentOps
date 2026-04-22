@@ -1,6 +1,7 @@
 package tasks
 
 import (
+	"fmt"
 	"path"
 	"strings"
 
@@ -75,4 +76,38 @@ func isSafePolicyPath(p string) bool {
 	}
 
 	return true
+}
+
+func validateChangedFilesAllowed(mode string, policy *model.TaskPolicy, changedFiles []string) error {
+	for _, file := range changedFiles {
+		if matchesAnyPolicyPath(file, policy.DeniedPaths) {
+			return fmt.Errorf("%w: %s", ErrChangedFileDenied, file)
+		}
+
+		if mode == TaskModePatch && !matchesAnyPolicyPath(file, policy.AllowedPaths) {
+			return fmt.Errorf("%w: %s", ErrChangedFileNotAllowed, file)
+		}
+	}
+
+	return nil
+}
+
+func matchesAnyPolicyPath(file string, policyPaths []string) bool {
+	file = strings.TrimSpace(file)
+	if file == "" {
+		return false
+	}
+
+	for _, policyPath := range policyPaths {
+		policyPath = strings.TrimSpace(policyPath)
+		if policyPath == "" {
+			continue
+		}
+
+		if file == policyPath || strings.HasPrefix(file, policyPath+"/") {
+			return true
+		}
+	}
+
+	return false
 }

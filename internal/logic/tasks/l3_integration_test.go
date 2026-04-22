@@ -74,6 +74,10 @@ func newL2TestApp(t *testing.T) *l2TestApp {
 					AccessSecret: "agentops-l3-test-secret",
 					AccessExpire: 3600,
 				},
+				Executor: config.ExecutorConf{
+					TimeoutSeconds:   30,
+					AllowedRepoPaths: []string{repoDir},
+				},
 			},
 			DB:                     db,
 			UserModel:              model.NewUserModel(db),
@@ -257,7 +261,9 @@ func TestL2ApproveStartSucceedFlowAndRepeatGuards(t *testing.T) {
 	if len(execResp.Items) != 1 {
 		t.Fatalf("expected 1 execution, got %d", len(execResp.Items))
 	}
-	if execResp.Items[0].Status != TaskStatusSucceeded || execResp.Items[0].OperatorId != "operator-1" || execResp.Items[0].ResultSummary != "mock executor completed task" {
+	if execResp.Items[0].Status != TaskStatusSucceeded ||
+		execResp.Items[0].OperatorId != "operator-1" ||
+		!strings.Contains(execResp.Items[0].ResultSummary, "summary: mock executor completed task") {
 		t.Fatalf("unexpected execution item: %+v", execResp.Items[0])
 	}
 
@@ -380,6 +386,55 @@ func TestL2FailAndCancelBehaviors(t *testing.T) {
 	}
 }
 
+func TestL4StartFailsWhenExecutorWritesOutsideAllowedPaths(t *testing.T) {
+	app := newL2TestApp(t)
+
+	outsidePath := fmt.Sprintf("l4-outside-%d.txt", time.Now().UnixNano())
+	t.Cleanup(func() {
+		_ = os.Remove(filepath.Join(app.repoDir, outsidePath))
+	})
+
+	taskID := createTaskForTest(t, app, types.CreateTaskReq{
+		Title:            "deny outside path",
+		RepoPath:         app.repoDir,
+		Prompt:           "write outside allowed path",
+		OperatorId:       "operator-1",
+		Mode:             TaskModePatch,
+		ApprovalRequired: false,
+		MaxSteps:         2,
+		AllowedPaths:     []string{"internal/logic/tasks"},
+	})
+
+	app.svcCtx.TaskRunner = writingTestRunner{
+		Path:    outsidePath,
+		Content: "outside allowed path",
+	}
+
+	startResp, err := NewStartTaskLogic(testActorContext("operator-1", authctx.SystemRoleOperator), app.svcCtx).StartTask(&types.StartTaskReq{
+		Id: taskID,
+	})
+	if err != nil {
+		t.Fatalf("start task: %v", err)
+	}
+	if startResp.Status != TaskStatusFailed {
+		t.Fatalf("expected synced start to fail, got %s", startResp.Status)
+	}
+
+	execResp, err := NewGetTaskExecutionsLogic(testActorContext("operator-1", authctx.SystemRoleOperator), app.svcCtx).GetTaskExecutions(&types.GetTaskExecutionsReq{Id: taskID})
+	if err != nil {
+		t.Fatalf("get executions: %v", err)
+	}
+	if len(execResp.Items) != 1 {
+		t.Fatalf("expected 1 execution, got %d", len(execResp.Items))
+	}
+	if execResp.Items[0].Status != TaskStatusFailed ||
+		!strings.Contains(execResp.Items[0].ErrorMessage, ErrChangedFileNotAllowed.Error()) ||
+		!strings.Contains(execResp.Items[0].ErrorMessage, outsidePath) ||
+		!strings.Contains(execResp.Items[0].ResultSummary, "gitNewChangedFiles: ["+outsidePath+"]") {
+		t.Fatalf("unexpected failed execution: %+v", execResp.Items[0])
+	}
+}
+
 func TestL2ConcurrentApproveOnlyOneSucceeds(t *testing.T) {
 	app := newL2TestApp(t)
 
@@ -454,6 +509,26 @@ func (r failingTestRunner) Run(ctx context.Context, req executor.Request) (execu
 	return executor.Result{
 		Summary: "test runner failed",
 	}, r.err
+}
+
+type writingTestRunner struct {
+	Path    string
+	Content string
+}
+
+func (r writingTestRunner) Run(ctx context.Context, req executor.Request) (executor.Result, error) {
+	fullPath := filepath.Join(req.Repo.Path, r.Path)
+	if err := os.WriteFile(fullPath, []byte(r.Content), 0644); err != nil {
+		return executor.Result{
+			Summary: "write test file failed",
+			Stderr:  err.Error(),
+		}, err
+	}
+
+	return executor.Result{
+		Summary: "write test file completed",
+		Stdout:  r.Path,
+	}, nil
 }
 
 func runConcurrently(n int, fn func() error) []error {

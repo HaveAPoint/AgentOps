@@ -21,10 +21,12 @@ type ServiceContext struct {
 	TaskExecutionModel     *model.TaskExecutionModel
 	TaskStatusHistoryModel *model.TaskStatusHistoryModel
 	TaskRunner             executor.Runner
+	ExecutionCancels       *executor.CancelRegistry
 }
 
 func NewServiceContext(c config.Config) *ServiceContext {
 	db, err := model.NewPostgresDB(c.Postgres)
+
 	if err != nil {
 		panic(fmt.Sprintf("init postgres failed: %v", err))
 	}
@@ -40,5 +42,6 @@ func NewServiceContext(c config.Config) *ServiceContext {
 		TaskExecutionModel:     model.NewTaskExecutionModel(db),
 		TaskStatusHistoryModel: model.NewTaskStatusHistoryModel(db),
 		TaskRunner:             executormock.NewRunner(),
+		ExecutionCancels:       executor.NewCancelRegistry(),
 	}
 }

@@ -33,4 +33,6 @@ var (
 	ErrAllowedPathRequiredForPatch = errors.New("allowedPaths is required for patch execution")
 	ErrInvalidPolicyPath           = errors.New("policy path must be relative and stay inside repo")
 	ErrRepoNotAllowed              = errors.New("repoPath is not allowed for execution")
+	ErrChangedFileDenied           = errors.New("changed file matches deniedPaths")
+	ErrChangedFileNotAllowed       = errors.New("changed file is outside allowedPaths")
 )

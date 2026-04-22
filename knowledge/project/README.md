@@ -21,5 +21,7 @@ AgentOps 项目实战知识的分类入口。
 - [AgentOps 中 logic 层与 model 层的边界](./logic_model_boundary_in_agentops.md)
 - [AgentOps L2 集成测试为什么这样写](./l2_integration_testing_notes.md)
 - [AgentOps 中 `task`、`execution` 与 `Finish` 的边界](./task_execution_finish_boundary.md)
+- [AgentOps 中 `context.CancelFunc` 与执行取消注册表的边界](./execution_cancel_registry_context.md)
+- [AgentOps 中 `StartTask` 与 `CancelTask` 的执行取消控制链](./start_cancel_control_chain.md)
 - [开发期为什么直接重写 schema 基线，而不是继续做兼容迁移](./development_phase_schema_baseline_rewrite.md)
 - [AgentOps 里 `.api -> goctl -> types/handler/logic` 为什么必须同步](./api_goctl_sync_boundary.md)
