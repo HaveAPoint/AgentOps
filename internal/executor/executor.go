@@ -2,10 +2,13 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	authctx "agentops/internal/auth"
 )
+
+var ErrProviderNotImplemented = errors.New("executor provider not implemented")
 
 type TaskInput struct {
 	ID       int64

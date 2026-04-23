@@ -19,6 +19,9 @@ Postgres:
   ConnMaxLifetimeSeconds: 600
 
 Executor:
+  Provider: mock
+  Command: ""
+  Args: []
   TimeoutSeconds: 30
   AllowedRepoPaths:
     - "."

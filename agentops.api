@@ -73,8 +73,9 @@ type (
 		UpdatedAt        string   `json:"updatedAt"`
 	}
 	ApproveTaskReq {
-		Id     string `path:"id"`
-		Reason string `json:"reason,optional"`
+		Id                string `path:"id"`
+		ExpectedUpdatedAt string `json:"expectedUpdatedAt"`
+		Reason            string `json:"reason,optional"`
 	}
 	ApproveTaskResp {
 		Id     string `json:"id"`

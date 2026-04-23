@@ -78,6 +78,10 @@ func (l *ApproveTaskLogic) ApproveTask(req *types.ApproveTaskReq) (resp *types.A
 		return nil, ErrPermissionDenied
 	}
 
+	if err = validateExpectedUpdatedAt(req.ExpectedUpdatedAt, task.UpdatedAt); err != nil {
+		return nil, err
+	}
+
 	approvedAt := time.Now().UTC()
 
 	if _, err = l.svcCtx.TaskModel.Approve(l.ctx, tx, taskID, reviewerID, approvedAt); err != nil {
@@ -137,4 +141,30 @@ func (l *ApproveTaskLogic) ApproveTask(req *types.ApproveTaskReq) (resp *types.A
 		Id:     strconv.FormatInt(taskID, 10),
 		Status: TaskStatusPending,
 	}, nil
+}
+
+func validateExpectedUpdatedAt(expectedUpdatedAt string, taskUpdatedAt time.Time) error {
+	expectedUpdatedAt = strings.TrimSpace(expectedUpdatedAt)
+	if expectedUpdatedAt == "" {
+		return ErrExpectedUpdatedAtRequired
+	}
+
+	parsed, err := parseRFC3339Time(expectedUpdatedAt)
+	if err != nil {
+		return ErrInvalidExpectedUpdatedAt
+	}
+
+	// Current API serializes updatedAt with second precision (RFC3339).
+	if parsed.UTC().Format(time.RFC3339) != taskUpdatedAt.UTC().Format(time.RFC3339) {
+		return ErrTaskVersionConflict
+	}
+
+	return nil
+}
+
+func parseRFC3339Time(value string) (time.Time, error) {
+	if t, err := time.Parse(time.RFC3339, value); err == nil {
+		return t, nil
+	}
+	return time.Parse(time.RFC3339Nano, value)
 }

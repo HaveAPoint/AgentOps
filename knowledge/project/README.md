@@ -25,3 +25,4 @@ AgentOps 项目实战知识的分类入口。
 - [AgentOps 中 `StartTask` 与 `CancelTask` 的执行取消控制链](./start_cancel_control_chain.md)
 - [开发期为什么直接重写 schema 基线，而不是继续做兼容迁移](./development_phase_schema_baseline_rewrite.md)
 - [AgentOps 里 `.api -> goctl -> types/handler/logic` 为什么必须同步](./api_goctl_sync_boundary.md)
+- [AgentOps 中 JWT claims 与 CurrentUser 上下文的绑定路径](./jwt_claims_context_in_agentops.md)

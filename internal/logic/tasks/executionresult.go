@@ -2,34 +2,77 @@ package tasks
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 
 	"agentops/internal/executor"
 )
 
 const maxExecutorOutputChars = 2000
 
-func buildExecutorResultSummary(result executor.Result) string {
-	parts := make([]string, 0, 3)
+type executionResultSummary struct {
+	Version               string `json:"version"`
+	Input                 summaryInput
+	Summary               string   `json:"summary,omitempty"`
+	Stdout                string   `json:"stdout,omitempty"`
+	Stderr                string   `json:"stderr,omitempty"`
+	StartedAt             string   `json:"startedAt,omitempty"`
+	FinishedAt            string   `json:"finishedAt,omitempty"`
+	GitChangedFilesBefore []string `json:"gitChangedFilesBefore"`
+	GitChangedFilesAfter  []string `json:"gitChangedFilesAfter"`
+	GitNewChangedFiles    []string `json:"gitNewChangedFiles"`
+}
 
-	if strings.TrimSpace(result.Summary) != "" {
-		parts = append(parts, "summary: "+strings.TrimSpace(result.Summary))
+type summaryInput struct {
+	TaskID       int64    `json:"taskId"`
+	Mode         string   `json:"mode"`
+	RepoPath     string   `json:"repoPath"`
+	OperatorID   string   `json:"operatorId,omitempty"`
+	AllowedPaths []string `json:"allowedPaths"`
+	DeniedPaths  []string `json:"deniedPaths"`
+	Timeout      string   `json:"timeout"`
+}
+
+func buildExecutorResultSummary(prepared *preparedExecution, result executor.Result, beforeFiles []string, afterFiles []string, newFiles []string) string {
+	summary := executionResultSummary{
+		Version: "v1",
+		Input: summaryInput{
+			TaskID:       prepared.task.ID,
+			Mode:         prepared.task.Mode,
+			RepoPath:     prepared.task.RepoPath,
+			AllowedPaths: append([]string(nil), prepared.policy.AllowedPaths...),
+			DeniedPaths:  append([]string(nil), prepared.policy.DeniedPaths...),
+			Timeout:      prepared.timeout.String(),
+		},
+		Summary:               strings.TrimSpace(result.Summary),
+		Stdout:                trimExecutorOutput(result.Stdout),
+		Stderr:                trimExecutorOutput(result.Stderr),
+		StartedAt:             formatSummaryTime(result.StartedAt),
+		FinishedAt:            formatSummaryTime(result.FinishedAt),
+		GitChangedFilesBefore: append([]string(nil), beforeFiles...),
+		GitChangedFilesAfter:  append([]string(nil), afterFiles...),
+		GitNewChangedFiles:    append([]string(nil), newFiles...),
 	}
 
-	if strings.TrimSpace(result.Stdout) != "" {
-		parts = append(parts, "stdout: "+trimExecutorOutput(result.Stdout))
+	if prepared.task.OperatorId.Valid {
+		summary.Input.OperatorID = prepared.task.OperatorId.String
 	}
 
-	if strings.TrimSpace(result.Stderr) != "" {
-		parts = append(parts, "stderr: "+trimExecutorOutput(result.Stderr))
+	encoded, err := json.Marshal(summary)
+	if err != nil {
+		return "{\"version\":\"v1\",\"summary\":\"serialization_error\"}"
 	}
 
-	return strings.Join(parts, "\n")
+	return string(encoded)
 }
 
 func trimExecutorOutput(output string) string {
 	output = strings.TrimSpace(output)
+	if output == "" {
+		return ""
+	}
 	if len(output) <= maxExecutorOutputChars {
 		return output
 	}
@@ -52,18 +95,26 @@ func buildExecutorErrorMessage(err error) string {
 	}
 }
 
-func appendGitChangedFilesSummary(summary string, beforeFiles []string, afterFiles []string, newFiles []string) string {
-	parts := make([]string, 0, 3)
-
-	if strings.TrimSpace(summary) != "" {
-		parts = append(parts, summary)
+func buildExecutionCancelErrorMessage(reason string, actorRole string, actorID string) string {
+	reason = strings.TrimSpace(reason)
+	if reason != "" {
+		return reason
 	}
 
-	parts = append(parts, "gitChangedFilesBefore: ["+strings.Join(beforeFiles, ",")+"]")
-	parts = append(parts, "gitChangedFilesAfter: ["+strings.Join(afterFiles, ",")+"]")
-	parts = append(parts, "gitNewChangedFiles: ["+strings.Join(newFiles, ",")+"]")
+	actorRole = strings.TrimSpace(actorRole)
+	actorID = strings.TrimSpace(actorID)
 
-	return strings.Join(parts, "\n")
+	if actorRole == "" && actorID == "" {
+		return "execution cancelled"
+	}
+	if actorRole == "" {
+		return "execution cancelled by " + actorID
+	}
+	if actorID == "" {
+		return "execution cancelled by " + actorRole
+	}
+
+	return "execution cancelled by " + actorRole + ": " + actorID
 }
 
 func diffChangedFiles(beforeFiles []string, afterFiles []string) []string {
@@ -82,4 +133,12 @@ func diffChangedFiles(beforeFiles []string, afterFiles []string) []string {
 	}
 
 	return diff
+}
+
+func formatSummaryTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+
+	return t.UTC().Format(time.RFC3339)
 }

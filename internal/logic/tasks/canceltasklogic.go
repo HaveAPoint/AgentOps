@@ -80,6 +80,7 @@ func (l *CancelTaskLogic) CancelTask(req *types.CancelTaskReq) (resp *types.Canc
 	}
 
 	cancelledAt := time.Now().UTC()
+	executionCancelErrorMessage := buildExecutionCancelErrorMessage(reason, actorRole, actorID)
 
 	var runningExecution *model.TaskExecution
 	if task.Status == TaskStatusRunning {
@@ -99,7 +100,7 @@ func (l *CancelTaskLogic) CancelTask(req *types.CancelTaskReq) (resp *types.Canc
 				Status:        TaskStatusCancelled,
 				FinishedAt:    cancelledAt,
 				ResultSummary: "",
-				ErrorMessage:  reason,
+				ErrorMessage:  executionCancelErrorMessage,
 			},
 		); err != nil {
 			return nil, err

@@ -35,4 +35,7 @@ var (
 	ErrRepoNotAllowed              = errors.New("repoPath is not allowed for execution")
 	ErrChangedFileDenied           = errors.New("changed file matches deniedPaths")
 	ErrChangedFileNotAllowed       = errors.New("changed file is outside allowedPaths")
+	ErrExpectedUpdatedAtRequired   = errors.New("expectedUpdatedAt is required")
+	ErrInvalidExpectedUpdatedAt    = errors.New("expectedUpdatedAt must be RFC3339 time")
+	ErrTaskVersionConflict         = errors.New("task was updated, please refresh and retry")
 )

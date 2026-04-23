@@ -4,8 +4,9 @@
 package types
 
 type ApproveTaskReq struct {
-	Id     string `path:"id"`
-	Reason string `json:"reason,optional"`
+	Id                string `path:"id"`
+	ExpectedUpdatedAt string `json:"expectedUpdatedAt"`
+	Reason            string `json:"reason,optional"`
 }
 
 type ApproveTaskResp struct {

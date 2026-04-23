@@ -3,9 +3,12 @@ package svc
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"agentops/internal/config"
 	"agentops/internal/executor"
+	executorcodex "agentops/internal/executor/codex"
+	executorgemini "agentops/internal/executor/gemini"
 	executormock "agentops/internal/executor/mock"
 	"agentops/internal/model"
 )
@@ -41,7 +44,20 @@ func NewServiceContext(c config.Config) *ServiceContext {
 		ApprovalRecordModel:    model.NewApprovalRecordModel(db),
 		TaskExecutionModel:     model.NewTaskExecutionModel(db),
 		TaskStatusHistoryModel: model.NewTaskStatusHistoryModel(db),
-		TaskRunner:             executormock.NewRunner(),
+		TaskRunner:             newTaskRunner(c.Executor),
 		ExecutionCancels:       executor.NewCancelRegistry(),
+	}
+}
+
+func newTaskRunner(c config.ExecutorConf) executor.Runner {
+	switch strings.ToLower(strings.TrimSpace(c.Provider)) {
+	case "", "mock":
+		return executormock.NewRunner()
+	case "codex":
+		return executorcodex.NewRunner(c.Command, c.Args)
+	case "gemini":
+		return executorgemini.NewRunner(c.Command, c.Args)
+	default:
+		panic(fmt.Sprintf("unsupported executor provider: %s", c.Provider))
 	}
 }

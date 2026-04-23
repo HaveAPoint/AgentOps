@@ -18,6 +18,7 @@ import (
 	authctx "agentops/internal/auth"
 	"agentops/internal/config"
 	"agentops/internal/executor"
+	executorgemini "agentops/internal/executor/gemini"
 	executormock "agentops/internal/executor/mock"
 	authlogic "agentops/internal/logic/auth"
 	"agentops/internal/model"
@@ -88,6 +89,7 @@ func newL2TestApp(t *testing.T) *l2TestApp {
 			TaskExecutionModel:     model.NewTaskExecutionModel(db),
 			TaskStatusHistoryModel: model.NewTaskStatusHistoryModel(db),
 			TaskRunner:             executormock.NewRunner(),
+			ExecutionCancels:       executor.NewCancelRegistry(),
 		},
 	}
 
@@ -212,9 +214,11 @@ func TestL2ApproveStartSucceedFlowAndRepeatGuards(t *testing.T) {
 		t.Fatalf("expected ErrPermissionDenied, got %v", err)
 	}
 	approveLogic := NewApproveTaskLogic(testActorContext("reviewer-1", authctx.SystemRoleReviewer), app.svcCtx)
+	expectedUpdatedAt := getTaskUpdatedAtForApprove(t, app, taskID)
 	if _, err := approveLogic.ApproveTask(&types.ApproveTaskReq{
-		Id:     taskID,
-		Reason: "approved",
+		Id:                taskID,
+		ExpectedUpdatedAt: expectedUpdatedAt,
+		Reason:            "approved",
 	}); err != nil {
 		t.Fatalf("approve task: %v", err)
 	}
@@ -263,7 +267,7 @@ func TestL2ApproveStartSucceedFlowAndRepeatGuards(t *testing.T) {
 	}
 	if execResp.Items[0].Status != TaskStatusSucceeded ||
 		execResp.Items[0].OperatorId != "operator-1" ||
-		!strings.Contains(execResp.Items[0].ResultSummary, "summary: mock executor completed task") {
+		!strings.Contains(execResp.Items[0].ResultSummary, "\"summary\":\"mock executor completed task\"") {
 		t.Fatalf("unexpected execution item: %+v", execResp.Items[0])
 	}
 
@@ -285,6 +289,50 @@ func TestL2ApproveStartSucceedFlowAndRepeatGuards(t *testing.T) {
 	expectedActions := []string{"create", "approve", "start", "succeed"}
 	if strings.Join(actions, ",") != strings.Join(expectedActions, ",") {
 		t.Fatalf("unexpected history actions: %v", actions)
+	}
+}
+
+func TestL4ApproveRejectsStaleExpectedUpdatedAt(t *testing.T) {
+	app := newL2TestApp(t)
+
+	taskID := createTaskForTest(t, app, types.CreateTaskReq{
+		Title:            "approve with stale expectedUpdatedAt",
+		RepoPath:         app.repoDir,
+		Prompt:           "approval should reject stale updatedAt",
+		ReviewerId:       "reviewer-1",
+		OperatorId:       "operator-1",
+		Mode:             TaskModePatch,
+		ApprovalRequired: true,
+		MaxSteps:         3,
+		AllowedPaths:     []string{"internal/logic/tasks"},
+	})
+
+	approveLogic := NewApproveTaskLogic(testActorContext("reviewer-1", authctx.SystemRoleReviewer), app.svcCtx)
+	currentExpectedUpdatedAt := getTaskUpdatedAtForApprove(t, app, taskID)
+	if _, err := approveLogic.ApproveTask(&types.ApproveTaskReq{
+		Id:                taskID,
+		ExpectedUpdatedAt: "2000-01-01T00:00:00Z",
+		Reason:            "should fail",
+	}); !errors.Is(err, ErrTaskVersionConflict) {
+		t.Fatalf("expected ErrTaskVersionConflict, got %v", err)
+	}
+
+	taskResp, err := NewGetTaskLogic(testActorContext("reviewer-1", authctx.SystemRoleReviewer), app.svcCtx).GetTask(&types.GetTaskReq{
+		Id: taskID,
+	})
+	if err != nil {
+		t.Fatalf("get task after failed approve: %v", err)
+	}
+	if taskResp.Status != TaskStatusWaitingApproval {
+		t.Fatalf("expected task status waiting_approval, got %s", taskResp.Status)
+	}
+
+	if _, err = approveLogic.ApproveTask(&types.ApproveTaskReq{
+		Id:                taskID,
+		ExpectedUpdatedAt: currentExpectedUpdatedAt,
+		Reason:            "approved with fresh updatedAt",
+	}); err != nil {
+		t.Fatalf("approve task with fresh updatedAt: %v", err)
 	}
 }
 
@@ -430,8 +478,290 @@ func TestL4StartFailsWhenExecutorWritesOutsideAllowedPaths(t *testing.T) {
 	if execResp.Items[0].Status != TaskStatusFailed ||
 		!strings.Contains(execResp.Items[0].ErrorMessage, ErrChangedFileNotAllowed.Error()) ||
 		!strings.Contains(execResp.Items[0].ErrorMessage, outsidePath) ||
-		!strings.Contains(execResp.Items[0].ResultSummary, "gitNewChangedFiles: ["+outsidePath+"]") {
+		!strings.Contains(execResp.Items[0].ResultSummary, "\"gitNewChangedFiles\":[\""+outsidePath+"\"]") {
 		t.Fatalf("unexpected failed execution: %+v", execResp.Items[0])
+	}
+}
+
+func TestL4StartWithLocalCommandRunnerCapturesOutputsAndChangedFiles(t *testing.T) {
+	app := newL2TestApp(t)
+
+	changedFile := fmt.Sprintf("internal/logic/tasks/l4-localcommand-%d.txt", time.Now().UnixNano())
+	t.Cleanup(func() {
+		_ = os.Remove(filepath.Join(app.repoDir, changedFile))
+	})
+
+	script := writeExecutableScript(t, "l4-localcommand.sh", fmt.Sprintf(`
+if [ "$1" != "-p" ]; then
+  echo "unexpected first arg: $1" >&2
+  exit 2
+fi
+printf "runner-stdout"
+printf "runner-stderr" >&2
+printf "%%s" "$2" > "%s"
+`, changedFile))
+
+	taskID := createTaskForTest(t, app, types.CreateTaskReq{
+		Title:            "run local command runner",
+		RepoPath:         app.repoDir,
+		Prompt:           "prompt-from-start-task",
+		OperatorId:       "operator-1",
+		Mode:             TaskModePatch,
+		ApprovalRequired: false,
+		MaxSteps:         2,
+		AllowedPaths:     []string{"internal/logic/tasks"},
+	})
+
+	app.svcCtx.TaskRunner = executorgemini.NewRunner(script, nil)
+
+	startResp, err := NewStartTaskLogic(testActorContext("operator-1", authctx.SystemRoleOperator), app.svcCtx).StartTask(&types.StartTaskReq{
+		Id: taskID,
+	})
+	if err != nil {
+		t.Fatalf("start task with local command runner: %v", err)
+	}
+	if startResp.Status != TaskStatusSucceeded {
+		t.Fatalf("expected synced start to succeed, got %s", startResp.Status)
+	}
+
+	execResp, err := NewGetTaskExecutionsLogic(testActorContext("operator-1", authctx.SystemRoleOperator), app.svcCtx).GetTaskExecutions(&types.GetTaskExecutionsReq{Id: taskID})
+	if err != nil {
+		t.Fatalf("get executions: %v", err)
+	}
+	if len(execResp.Items) != 1 {
+		t.Fatalf("expected 1 execution, got %d", len(execResp.Items))
+	}
+
+	item := execResp.Items[0]
+	if item.Status != TaskStatusSucceeded ||
+		!strings.Contains(item.ResultSummary, "\"summary\":\"gemini executor command completed\"") ||
+		!strings.Contains(item.ResultSummary, "\"stdout\":\"runner-stdout\"") ||
+		!strings.Contains(item.ResultSummary, "\"stderr\":\"runner-stderr\"") ||
+		!strings.Contains(item.ResultSummary, "\"gitNewChangedFiles\":[\""+changedFile+"\"]") {
+		t.Fatalf("unexpected execution item: %+v", item)
+	}
+}
+
+func TestL4RunningCancelSignalsExecutorAndReturnsCancelled(t *testing.T) {
+	app := newL2TestApp(t)
+
+	taskID := createTaskForTest(t, app, types.CreateTaskReq{
+		Title:            "cancel running executor",
+		RepoPath:         app.repoDir,
+		Prompt:           "wait until cancelled",
+		OperatorId:       "operator-1",
+		Mode:             TaskModePatch,
+		ApprovalRequired: false,
+		MaxSteps:         2,
+		AllowedPaths:     []string{"internal/logic/tasks"},
+	})
+
+	runner := &blockingCancelTestRunner{
+		started: make(chan struct{}),
+		done:    make(chan struct{}),
+	}
+	app.svcCtx.TaskRunner = runner
+
+	startResult := make(chan startTaskResult, 1)
+	go func() {
+		resp, err := NewStartTaskLogic(testActorContext("operator-1", authctx.SystemRoleOperator), app.svcCtx).StartTask(&types.StartTaskReq{
+			Id: taskID,
+		})
+		startResult <- startTaskResult{resp: resp, err: err}
+	}()
+
+	select {
+	case <-runner.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner did not start")
+	}
+
+	cancelResp, err := NewCancelTaskLogic(testActorContext("operator-1", authctx.SystemRoleOperator), app.svcCtx).CancelTask(&types.CancelTaskReq{
+		Id:     taskID,
+		Reason: "stop running executor",
+	})
+	if err != nil {
+		t.Fatalf("cancel running task: %v", err)
+	}
+	if cancelResp.Status != TaskStatusCancelled {
+		t.Fatalf("expected cancel response status cancelled, got %s", cancelResp.Status)
+	}
+
+	select {
+	case <-runner.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner did not observe cancellation")
+	}
+
+	select {
+	case result := <-startResult:
+		if result.err != nil {
+			t.Fatalf("start task after cancel: %v", result.err)
+		}
+		if result.resp == nil || result.resp.Status != TaskStatusCancelled {
+			t.Fatalf("expected start response cancelled, got %+v", result.resp)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("start task did not return after cancellation")
+	}
+
+	execResp, err := NewGetTaskExecutionsLogic(testActorContext("operator-1", authctx.SystemRoleOperator), app.svcCtx).GetTaskExecutions(&types.GetTaskExecutionsReq{Id: taskID})
+	if err != nil {
+		t.Fatalf("get executions: %v", err)
+	}
+	if len(execResp.Items) != 1 {
+		t.Fatalf("expected 1 execution, got %d", len(execResp.Items))
+	}
+	if execResp.Items[0].Status != TaskStatusCancelled ||
+		execResp.Items[0].ErrorMessage != "stop running executor" {
+		t.Fatalf("unexpected cancelled execution: %+v", execResp.Items[0])
+	}
+}
+
+func TestL4RunningCancelInterruptsLocalCommandRunner(t *testing.T) {
+	app := newL2TestApp(t)
+
+	script := writeExecutableScript(t, "l4-localcommand-cancel.sh", `
+if [ "$1" != "-p" ]; then
+  echo "unexpected first arg: $1" >&2
+  exit 2
+fi
+while true; do
+  sleep 1
+done
+`)
+
+	taskID := createTaskForTest(t, app, types.CreateTaskReq{
+		Title:            "cancel local command runner",
+		RepoPath:         app.repoDir,
+		Prompt:           "run until cancelled",
+		OperatorId:       "operator-1",
+		Mode:             TaskModePatch,
+		ApprovalRequired: false,
+		MaxSteps:         2,
+		AllowedPaths:     []string{"internal/logic/tasks"},
+	})
+
+	app.svcCtx.TaskRunner = executorgemini.NewRunner(script, nil)
+
+	startResult := make(chan startTaskResult, 1)
+	go func() {
+		resp, err := NewStartTaskLogic(testActorContext("operator-1", authctx.SystemRoleOperator), app.svcCtx).StartTask(&types.StartTaskReq{
+			Id: taskID,
+		})
+		startResult <- startTaskResult{resp: resp, err: err}
+	}()
+
+	waitTaskStatus(t, app, taskID, TaskStatusRunning, 2*time.Second)
+
+	cancelResp, err := NewCancelTaskLogic(testActorContext("operator-1", authctx.SystemRoleOperator), app.svcCtx).CancelTask(&types.CancelTaskReq{
+		Id:     taskID,
+		Reason: "stop local command runner",
+	})
+	if err != nil {
+		t.Fatalf("cancel running task: %v", err)
+	}
+	if cancelResp.Status != TaskStatusCancelled {
+		t.Fatalf("expected cancel response status cancelled, got %s", cancelResp.Status)
+	}
+
+	select {
+	case result := <-startResult:
+		if result.err != nil {
+			t.Fatalf("start task after cancel: %v", result.err)
+		}
+		if result.resp == nil || result.resp.Status != TaskStatusCancelled {
+			t.Fatalf("expected start response cancelled, got %+v", result.resp)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("start task did not return after cancellation")
+	}
+
+	execResp, err := NewGetTaskExecutionsLogic(testActorContext("operator-1", authctx.SystemRoleOperator), app.svcCtx).GetTaskExecutions(&types.GetTaskExecutionsReq{Id: taskID})
+	if err != nil {
+		t.Fatalf("get executions: %v", err)
+	}
+	if len(execResp.Items) != 1 {
+		t.Fatalf("expected 1 execution, got %d", len(execResp.Items))
+	}
+	if execResp.Items[0].Status != TaskStatusCancelled ||
+		execResp.Items[0].ErrorMessage != "stop local command runner" {
+		t.Fatalf("unexpected cancelled execution: %+v", execResp.Items[0])
+	}
+}
+
+func TestL4RunningCancelWithoutReasonWritesDefaultExecutionError(t *testing.T) {
+	app := newL2TestApp(t)
+
+	taskID := createTaskForTest(t, app, types.CreateTaskReq{
+		Title:            "cancel running without reason",
+		RepoPath:         app.repoDir,
+		Prompt:           "wait until cancelled",
+		OperatorId:       "operator-1",
+		Mode:             TaskModePatch,
+		ApprovalRequired: false,
+		MaxSteps:         2,
+		AllowedPaths:     []string{"internal/logic/tasks"},
+	})
+
+	runner := &blockingCancelTestRunner{
+		started: make(chan struct{}),
+		done:    make(chan struct{}),
+	}
+	app.svcCtx.TaskRunner = runner
+
+	startResult := make(chan startTaskResult, 1)
+	go func() {
+		resp, err := NewStartTaskLogic(testActorContext("operator-1", authctx.SystemRoleOperator), app.svcCtx).StartTask(&types.StartTaskReq{
+			Id: taskID,
+		})
+		startResult <- startTaskResult{resp: resp, err: err}
+	}()
+
+	select {
+	case <-runner.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner did not start")
+	}
+
+	cancelResp, err := NewCancelTaskLogic(testActorContext("operator-1", authctx.SystemRoleOperator), app.svcCtx).CancelTask(&types.CancelTaskReq{
+		Id: taskID,
+	})
+	if err != nil {
+		t.Fatalf("cancel running task: %v", err)
+	}
+	if cancelResp.Status != TaskStatusCancelled {
+		t.Fatalf("expected cancel response status cancelled, got %s", cancelResp.Status)
+	}
+
+	select {
+	case <-runner.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runner did not observe cancellation")
+	}
+
+	select {
+	case result := <-startResult:
+		if result.err != nil {
+			t.Fatalf("start task after cancel: %v", result.err)
+		}
+		if result.resp == nil || result.resp.Status != TaskStatusCancelled {
+			t.Fatalf("expected start response cancelled, got %+v", result.resp)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("start task did not return after cancellation")
+	}
+
+	execResp, err := NewGetTaskExecutionsLogic(testActorContext("operator-1", authctx.SystemRoleOperator), app.svcCtx).GetTaskExecutions(&types.GetTaskExecutionsReq{Id: taskID})
+	if err != nil {
+		t.Fatalf("get executions: %v", err)
+	}
+	if len(execResp.Items) != 1 {
+		t.Fatalf("expected 1 execution, got %d", len(execResp.Items))
+	}
+	if execResp.Items[0].Status != TaskStatusCancelled ||
+		execResp.Items[0].ErrorMessage != "execution cancelled by operator: operator-1" {
+		t.Fatalf("unexpected cancelled execution: %+v", execResp.Items[0])
 	}
 }
 
@@ -443,14 +773,17 @@ func TestL2ConcurrentApproveOnlyOneSucceeds(t *testing.T) {
 		RepoPath:         app.repoDir,
 		Prompt:           "approve race",
 		ReviewerId:       "reviewer-1",
+		OperatorId:       "operator-1",
 		Mode:             TaskModeAnalyze,
 		ApprovalRequired: true,
 		MaxSteps:         2,
 	})
+	expectedUpdatedAt := getTaskUpdatedAtForApprove(t, app, taskID)
 
 	errs := runConcurrently(4, func() error {
 		_, err := NewApproveTaskLogic(testActorContext("reviewer-1", authctx.SystemRoleReviewer), app.svcCtx).ApproveTask(&types.ApproveTaskReq{
-			Id: taskID,
+			Id:                taskID,
+			ExpectedUpdatedAt: expectedUpdatedAt,
 		})
 		return err
 	})
@@ -493,6 +826,18 @@ func createTaskForTest(t *testing.T, app *l2TestApp, req types.CreateTaskReq) st
 	return resp.Id
 }
 
+func getTaskUpdatedAtForApprove(t *testing.T, app *l2TestApp, taskID string) string {
+	t.Helper()
+
+	taskResp, err := NewGetTaskLogic(testActorContext("creator-1", authctx.SystemRoleViewer), app.svcCtx).GetTask(&types.GetTaskReq{
+		Id: taskID,
+	})
+	if err != nil {
+		t.Fatalf("get task for expectedUpdatedAt: %v", err)
+	}
+	return taskResp.UpdatedAt
+}
+
 func testActorContext(id string, role string) context.Context {
 	return authctx.WithCurrentUser(context.Background(), authctx.CurrentUser{
 		ID:         id,
@@ -529,6 +874,27 @@ func (r writingTestRunner) Run(ctx context.Context, req executor.Request) (execu
 		Summary: "write test file completed",
 		Stdout:  r.Path,
 	}, nil
+}
+
+type startTaskResult struct {
+	resp *types.StartTaskResp
+	err  error
+}
+
+type blockingCancelTestRunner struct {
+	started chan struct{}
+	done    chan struct{}
+}
+
+func (r *blockingCancelTestRunner) Run(ctx context.Context, req executor.Request) (executor.Result, error) {
+	close(r.started)
+	<-ctx.Done()
+	close(r.done)
+
+	return executor.Result{
+		Summary: "runner observed cancellation",
+		Stderr:  ctx.Err().Error(),
+	}, ctx.Err()
 }
 
 func runConcurrently(n int, fn func() error) []error {
@@ -673,4 +1039,48 @@ func mustAtoi(value string) int {
 		panic(err)
 	}
 	return n
+}
+
+func waitTaskStatus(t *testing.T, app *l2TestApp, taskID string, expectedStatus string, timeout time.Duration) {
+	t.Helper()
+
+	logic := NewGetTaskLogic(testActorContext("operator-1", authctx.SystemRoleOperator), app.svcCtx)
+	deadline := time.Now().Add(timeout)
+
+	lastStatus := ""
+	lastErr := error(nil)
+
+	for time.Now().Before(deadline) {
+		resp, err := logic.GetTask(&types.GetTaskReq{Id: taskID})
+		if err != nil {
+			lastErr = err
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+
+		lastStatus = resp.Status
+		if resp.Status == expectedStatus {
+			return
+		}
+
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if lastErr != nil {
+		t.Fatalf("wait task status timed out, last err: %v", lastErr)
+	}
+	t.Fatalf("wait task status timed out, expected=%s got=%s", expectedStatus, lastStatus)
+}
+
+func writeExecutableScript(t *testing.T, name string, body string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, name)
+	content := "#!/bin/sh\nset -eu\n" + strings.TrimSpace(body) + "\n"
+	if err := os.WriteFile(path, []byte(content), 0755); err != nil {
+		t.Fatalf("write executable script: %v", err)
+	}
+
+	return path
 }

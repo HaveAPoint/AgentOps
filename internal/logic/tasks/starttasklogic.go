@@ -27,6 +27,13 @@ type StartTaskLogic struct {
 	svcCtx *svc.ServiceContext
 }
 
+type preparedExecution struct {
+	task               *model.Task
+	policy             *model.TaskPolicy
+	timeout            time.Duration
+	changedFilesBefore []string
+}
+
 func NewStartTaskLogic(ctx context.Context, svcCtx *svc.ServiceContext) *StartTaskLogic {
 	return &StartTaskLogic{
 		Logger: logx.WithContext(ctx),
@@ -56,6 +63,27 @@ func (l *StartTaskLogic) StartTask(req *types.StartTaskReq) (resp *types.StartTa
 		return nil, ErrInvalidTaskID
 	}
 
+	prepared, err := l.prepareExecution(taskID, operatorID)
+	if err != nil {
+		return nil, err
+	}
+
+	runCtx, cancel := context.WithTimeout(l.ctx, prepared.timeout)
+	l.svcCtx.ExecutionCancels.Register(taskID, cancel)
+	defer l.svcCtx.ExecutionCancels.Unregister(taskID)
+	defer cancel()
+
+	result, runErr := l.svcCtx.TaskRunner.Run(runCtx, buildExecutorRequest(prepared.task, actor, prepared.policy, prepared.timeout))
+	resultSummary, runErr := inspectExecutionResult(prepared, result, runErr)
+
+	if runErr != nil {
+		return l.handleExecutionRunError(taskID, resultSummary, runErr)
+	}
+
+	return l.handleExecutionSucceed(taskID, resultSummary)
+}
+
+func (l *StartTaskLogic) prepareExecution(taskID int64, operatorID string) (*preparedExecution, error) {
 	tx, err := l.svcCtx.DB.BeginTx(l.ctx, &sql.TxOptions{})
 	if err != nil {
 		return nil, err
@@ -154,12 +182,25 @@ func (l *StartTaskLogic) StartTask(req *types.StartTaskReq) (resp *types.StartTa
 		return nil, err
 	}
 
-	runCtx, cancel := context.WithTimeout(l.ctx, executionTimeout)
-	l.svcCtx.ExecutionCancels.Register(taskID, cancel)
-	defer l.svcCtx.ExecutionCancels.Unregister(taskID)
-	defer cancel()
+	return &preparedExecution{
+		task:               task,
+		policy:             policy,
+		timeout:            executionTimeout,
+		changedFilesBefore: changedFilesBefore,
+	}, nil
+}
 
-	result, runErr := l.svcCtx.TaskRunner.Run(runCtx, executor.Request{
+func buildExecutionStartMessage(operatorID string, task *model.Task, policy *model.TaskPolicy, timeout time.Duration) string {
+	return "task started by operator: " + operatorID +
+		", repo: " + task.RepoPath +
+		", mode: " + task.Mode +
+		", allowedPaths: [" + strings.Join(policy.AllowedPaths, ",") + "]" +
+		", deniedPaths: [" + strings.Join(policy.DeniedPaths, ",") + "]" +
+		", timeout: " + timeout.String()
+}
+
+func buildExecutorRequest(task *model.Task, actor authctx.CurrentUser, policy *model.TaskPolicy, timeout time.Duration) executor.Request {
+	return executor.Request{
 		Task: executor.TaskInput{
 			ID:       task.ID,
 			Title:    task.Title,
@@ -178,56 +219,66 @@ func (l *StartTaskLogic) StartTask(req *types.StartTaskReq) (resp *types.StartTa
 			AllowedPaths: policy.AllowedPaths,
 			DeniedPaths:  policy.DeniedPaths,
 		},
-		Timeout: executionTimeout,
-	})
-	changedFilesAfter, inspectErr := gitctx.ChangedFiles(task.RepoPath)
-	newChangedFiles := diffChangedFiles(changedFilesBefore, changedFilesAfter)
+		Timeout: timeout,
+	}
+}
 
-	resultSummary := buildExecutorResultSummary(result)
-	resultSummary = appendGitChangedFilesSummary(resultSummary, changedFilesBefore, changedFilesAfter, newChangedFiles)
+func inspectExecutionResult(prepared *preparedExecution, result executor.Result, runErr error) (string, error) {
+	changedFilesAfter, inspectErr := gitctx.ChangedFiles(prepared.task.RepoPath)
+	newChangedFiles := diffChangedFiles(prepared.changedFilesBefore, changedFilesAfter)
+
+	resultSummary := buildExecutorResultSummary(prepared, result, prepared.changedFilesBefore, changedFilesAfter, newChangedFiles)
 
 	if inspectErr != nil && runErr == nil {
 		runErr = inspectErr
 	}
 
 	if runErr == nil {
-		if err = validateChangedFilesAllowed(task.Mode, policy, newChangedFiles); err != nil {
+		if err := validateChangedFilesAllowed(prepared.task.Mode, prepared.policy, newChangedFiles); err != nil {
 			runErr = err
 		}
 	}
 
-	if runErr != nil {
-		if errors.Is(runErr, context.Canceled) {
-			cancelledTask, findErr := l.svcCtx.TaskModel.FindByID(l.ctx, taskID)
-			if findErr != nil {
-				return nil, findErr
-			}
-			if cancelledTask.Status == TaskStatusCancelled {
-				return &types.StartTaskResp{
-					Id:     strconv.FormatInt(taskID, 10),
-					Status: TaskStatusCancelled,
-				}, nil
-			}
-		}
+	return resultSummary, runErr
+}
 
-		failLogic := NewFailTaskLogic(l.ctx, l.svcCtx)
-		if _, err = failLogic.FailTask(&types.FailTaskReq{
-			Id:            strconv.FormatInt(taskID, 10),
-			ResultSummary: resultSummary,
-			ErrorMessage:  buildExecutorErrorMessage(runErr),
-		}); err != nil {
-			return nil, err
-		}
+func (l *StartTaskLogic) handleExecutionRunError(taskID int64, resultSummary string, runErr error) (*types.StartTaskResp, error) {
+	id := strconv.FormatInt(taskID, 10)
 
-		return &types.StartTaskResp{
-			Id:     strconv.FormatInt(taskID, 10),
-			Status: TaskStatusFailed,
-		}, nil
+	if errors.Is(runErr, context.Canceled) {
+		cancelledTask, findErr := l.svcCtx.TaskModel.FindByID(l.ctx, taskID)
+		if findErr != nil {
+			return nil, findErr
+		}
+		if cancelledTask.Status == TaskStatusCancelled {
+			return &types.StartTaskResp{
+				Id:     id,
+				Status: TaskStatusCancelled,
+			}, nil
+		}
 	}
 
+	failLogic := NewFailTaskLogic(l.ctx, l.svcCtx)
+	if _, err := failLogic.FailTask(&types.FailTaskReq{
+		Id:            id,
+		ResultSummary: resultSummary,
+		ErrorMessage:  buildExecutorErrorMessage(runErr),
+	}); err != nil {
+		return nil, err
+	}
+
+	return &types.StartTaskResp{
+		Id:     id,
+		Status: TaskStatusFailed,
+	}, nil
+}
+
+func (l *StartTaskLogic) handleExecutionSucceed(taskID int64, resultSummary string) (*types.StartTaskResp, error) {
+	id := strconv.FormatInt(taskID, 10)
+
 	succeedLogic := NewSucceedTaskLogic(l.ctx, l.svcCtx)
-	if _, err = succeedLogic.SucceedTask(&types.SucceedTaskReq{
-		Id:            strconv.FormatInt(taskID, 10),
+	if _, err := succeedLogic.SucceedTask(&types.SucceedTaskReq{
+		Id:            id,
 		ResultSummary: resultSummary,
 	}); err != nil {
 		if errors.Is(err, ErrTaskNotRunning) {
@@ -239,7 +290,7 @@ func (l *StartTaskLogic) StartTask(req *types.StartTaskReq) (resp *types.StartTa
 			switch currentTask.Status {
 			case TaskStatusCancelled, TaskStatusFailed, TaskStatusSucceeded:
 				return &types.StartTaskResp{
-					Id:     strconv.FormatInt(taskID, 10),
+					Id:     id,
 					Status: currentTask.Status,
 				}, nil
 			}
@@ -249,16 +300,7 @@ func (l *StartTaskLogic) StartTask(req *types.StartTaskReq) (resp *types.StartTa
 	}
 
 	return &types.StartTaskResp{
-		Id:     strconv.FormatInt(taskID, 10),
+		Id:     id,
 		Status: TaskStatusSucceeded,
 	}, nil
-}
-
-func buildExecutionStartMessage(operatorID string, task *model.Task, policy *model.TaskPolicy, timeout time.Duration) string {
-	return "task started by operator: " + operatorID +
-		", repo: " + task.RepoPath +
-		", mode: " + task.Mode +
-		", allowedPaths: [" + strings.Join(policy.AllowedPaths, ",") + "]" +
-		", deniedPaths: [" + strings.Join(policy.DeniedPaths, ",") + "]" +
-		", timeout: " + timeout.String()
 }

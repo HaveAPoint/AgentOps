@@ -29,7 +29,10 @@ type AuthConf struct {
 }
 
 type ExecutorConf struct {
-	TimeoutSeconds  int64
+	Provider         string
+	Command          string
+	Args             []string
+	TimeoutSeconds   int64
 	AllowedRepoPaths []string
 }
 
